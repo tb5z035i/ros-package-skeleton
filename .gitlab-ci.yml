@@ -13,13 +13,14 @@ workflow:
 variables:
   ROS_DISTRO: "jazzy"
   TARGET_ARCH: "amd64"
+  ROS_IMAGE_REPOSITORY: "ros"
   ROSDISTRO_INDEX_URL: "https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml"
   BUILD_JOBS: "2"
   DEBIAN_FRONTEND: "noninteractive"
   GIT_SUBMODULE_STRATEGY: recursive
 
 default:
-  image: "ros:${ROS_DISTRO}-ros-core"
+  image: "${ROS_IMAGE_REPOSITORY}:${ROS_DISTRO}-ros-core"
   tags:
     - "$TARGET_ARCH"
   interruptible: true
@@ -28,7 +29,11 @@ default:
   parallel:
     matrix:
       - ROS_DISTRO: [jazzy, humble]
-        TARGET_ARCH: [amd64, arm64]
+        TARGET_ARCH: [amd64]
+        ROS_IMAGE_REPOSITORY: [ros]
+      - ROS_DISTRO: [jazzy, humble]
+        TARGET_ARCH: [arm64]
+        ROS_IMAGE_REPOSITORY: [registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros]
 
 build_and_package:
   extends: .target_matrix

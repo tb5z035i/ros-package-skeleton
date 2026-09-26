@@ -1,6 +1,14 @@
 ARG ROS_DISTRO=jazzy
-ARG ROS_IMAGE=ros:${ROS_DISTRO}-ros-core
-FROM ${ROS_IMAGE}
+ARG TARGETARCH
+ARG ROS_IMAGE=ros-${ROS_DISTRO}-${TARGETARCH}
+
+# BuildKit selects the base for --platform (the host architecture by default).
+FROM ros:jazzy-ros-core AS ros-jazzy-amd64
+FROM registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros:jazzy-ros-core AS ros-jazzy-arm64
+FROM ros:humble-ros-core AS ros-humble-amd64
+FROM registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros:humble-ros-core AS ros-humble-arm64
+
+FROM ${ROS_IMAGE} AS workspace
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

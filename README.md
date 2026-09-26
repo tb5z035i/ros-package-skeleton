@@ -11,7 +11,7 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| `.devcontainer/`、`Dockerfile` | VS Code 开发环境，默认公开镜像 `ros:jazzy-ros-core` |
+| `.devcontainer/`、`Dockerfile` | VS Code 开发环境，按 ROS 发行版和目标架构选择基础镜像 |
 | `src/hello_py` | `ament_python` / rclpy 示例 |
 | `src/hello_cpp` | `ament_cmake` / rclcpp 示例 |
 | `packaging.toml`、`scripts/` | 依赖安装和整个工作空间的 `.deb` 打包 |
@@ -22,6 +22,31 @@
 开发容器默认面向 **本地 Linux 桌面（X11，或启用 XWayland 的 Wayland）**。宿主机安装 Docker、VS Code、Dev Containers 扩展和 `xauth`（Ubuntu：`sudo apt install xauth`），从桌面会话打开 VS Code，选择 **Dev Containers: Reopen in Container**。首次创建容器会自动安装 `src/` 的依赖；新终端自动加载 ROS 环境。添加依赖后重新执行 `bash scripts/install-deps`。
 
 默认使用 Jazzy；使用 Humble 时，在启动 VS Code 的宿主机环境中设置 `ROS_WORKSPACE_DISTRO=humble`，再重建开发容器。容器架构默认跟随宿主机。切换 ROS 发行版或架构时，先清理旧的 `build/`、`install/`、`log/`，避免复用不兼容的构建产物。
+
+Dockerfile（需要 BuildKit，通过 [`TARGETARCH`](https://docs.docker.com/reference/dockerfile/#automatic-platform-args-in-the-global-scope) 选择架构）和 CI 使用相同的基础镜像映射：
+
+| ROS 2 | 架构 | 基础镜像 |
+| --- | --- | --- |
+| Jazzy | amd64 | `ros:jazzy-ros-core` |
+| Jazzy | arm64 | `registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros:jazzy-ros-core` |
+| Humble | amd64 | `ros:humble-ros-core` |
+| Humble | arm64 | `registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros:humble-ros-core` |
+
+Jazzy 和 Humble 的 ARM64 镜像需先同步到内部仓库。在已安装 Docker 的宿主机上登录并执行（这两个内部标签仅用于 ARM64）：
+
+```bash
+docker login registry.jihulab.com
+for distro in jazzy humble; do
+  image="ros:${distro}-ros-core"
+  mirror="registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/${image}"
+  docker pull --platform linux/arm64 "$image"
+  docker image inspect --platform linux/arm64 "$image" --format '{{.Os}}/{{.Architecture}}' # 应为 linux/arm64
+  docker tag "$image" "$mirror"
+  docker push --platform linux/arm64 "$mirror"
+done
+```
+
+[`docker image inspect --platform`](https://docs.docker.com/reference/cli/docker/image/inspect/) 需要 Docker API 1.49+，显式检查 ARM64，避免本地同时缓存多个架构时检查到宿主机架构。[`docker push --platform`](https://docs.docker.com/reference/cli/docker/image/push/) 需要 Docker API 1.46+，确保仅发布 ARM64 清单。开发宿主机和 ARM64 Runner 必须具有此私有镜像的拉取权限；同项目 CI 可使用内置 Registry 认证，跨项目需配置 job token 允许列表和权限，或在 Runner / `DOCKER_AUTH_CONFIG` 中配置凭据，参见 [GitLab 私有镜像认证](https://docs.gitlab.com/ci/docker/using_docker_images/#access-an-image-from-a-private-container-registry)。
 
 ```bash
 colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -95,9 +120,9 @@ ros2 run hello_py talker
 
 测试照常运行，但失败不阻止流水线成功或标签发布：`ci-build` 中的回归测试、colcon 测试和节点消息测试失败时打印警告并继续，保留测试报告；`verify_deb` 允许失败，在 GitLab 中显示警告。构建和打包失败仍会阻止流水线成功。
 
-在作业的 **Artifacts** 下载 `dist/<发行版>/<架构>/*.deb`，对应测试报告和构建日志位于同一目标目录，保留一周。自建 Linux Docker/Kubernetes Runner 必须按真实架构分别设置 **`amd64`**、**`arm64`** 标签；每个目标通过 `TARGET_ARCH` 选择对应 Runner，发布作业使用 `amd64`。Runner 以 root 用户运行容器，并能访问 Docker Hub 和 TUNA 镜像站；无需 Docker-in-Docker、QEMU 或特权容器。脚本会检查容器实际架构与 `TARGET_ARCH` 一致。
+在作业的 **Artifacts** 下载 `dist/<发行版>/<架构>/*.deb`，对应测试报告和构建日志位于同一目标目录，保留一周。自建 Linux Docker/Kubernetes Runner 必须按真实架构分别设置 **`amd64`**、**`arm64`** 标签；每个目标通过 `TARGET_ARCH` 选择对应 Runner，发布作业使用 `amd64`。Runner 以 root 用户运行容器，并能访问 Docker Hub、极狐 GitLab Registry 和 TUNA 镜像站；无需 Docker-in-Docker、QEMU 或特权容器。脚本会检查容器实际架构与 `TARGET_ARCH` 一致。
 
-普通提交生成 `0.1.0~ci<流水线编号>+<提交>-1` 版本，发布标签使用 `v0.1.0-1` 等合法 Debian 版本。可通过 CI 变量 `DEB_VERSION` 覆盖版本、`BUILD_JOBS` 调整并行度。CI 镜像由矩阵选择 `ros:<发行版>-ros-core`，可按需修改 `default.image` 使用对应的内部镜像。本地 Docker 构建支持 `--build-arg ROS_DISTRO=humble` 或 `--build-arg ROS_IMAGE=<对应环境的镜像>`。示例 CI 配置参考 [GitLab YAML 文档](https://docs.gitlab.com/ci/yaml/)。
+普通提交生成 `0.1.0~ci<流水线编号>+<提交>-1` 版本，发布标签使用 `v0.1.0-1` 等合法 Debian 版本。可通过 CI 变量 `DEB_VERSION` 覆盖版本、`BUILD_JOBS` 调整并行度。CI 矩阵通过 `ROS_IMAGE_REPOSITORY` 为每种 ROS/架构组合选择上述基础镜像，发布作业默认使用公开 Jazzy amd64 镜像。本地 Docker 构建通过 `--platform` 自动选择对应基础镜像，支持 `--build-arg ROS_DISTRO=humble` 或 `--build-arg ROS_IMAGE=<对应环境的镜像>` 覆盖。示例 CI 配置参考 [GitLab YAML 文档](https://docs.gitlab.com/ci/yaml/)。
 
 发布使用内置 `CI_JOB_TOKEN`，项目需启用 Package Registry。Registry 包名来自 `packaging.toml` 的 `package.name`（例如 `example-workspace`），版本与构建时的 Debian 版本一致；四个产物以不同文件名存储。Release 标题使用工作空间名和原始标签，例如 `example-workspace v0.1.0`。Release 使用原始标签，可选说明文件为 `docs/release-notes/v<版本>.md`；没有说明文件时使用默认描述。发布包不受作业 Artifacts 的一周过期时间限制；已存在同名标签的 Release 时创建会失败。
 
