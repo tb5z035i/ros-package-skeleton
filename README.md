@@ -77,10 +77,13 @@ ros2 run hello_py talker
 
 1. `build_and_package` 安装依赖，运行打包回归测试、colcon 构建/测试和两个节点的真实消息测试，生成 `.deb`。
 2. `verify_deb` 在新的 ROS 基础容器中仅通过 APT 安装 `.deb`，验证两个节点、卸载结果和 ROS 环境文件完整性。
+3. 仅标签流水线运行 `release_packages`：前两步成功后，将 `dist/*.deb` 上传到 GitLab Generic Package Registry，并创建带下载链接的 GitLab Release。
 
 在作业的 **Artifacts** 下载 `dist/*.deb`，测试报告和构建日志保留一周。需要可运行无标签作业的 Linux Docker/Kubernetes Runner，以 root 用户运行容器，并能访问 Docker Hub 和 TUNA 镜像站；无需 Docker-in-Docker 或特权容器。自建 Runner 若强制标签，请在 `default.tags` 中填写实际标签。
 
 普通提交生成 `0.1.0~ci<流水线编号>+<提交>-1` 版本，发布标签使用 `v0.1.0-1` 等合法 Debian 版本。可通过 CI 变量 `DEB_VERSION` 覆盖版本、`BUILD_JOBS` 调整并行度、`ROS_IMAGE` 指定等价的公开/内部 Jazzy Noble 镜像；本地 Docker 构建对应 `--build-arg ROS_IMAGE=...`。示例 CI 配置参考 [GitLab YAML 文档](https://docs.gitlab.com/ci/yaml/)。
+
+发布使用内置 `CI_JOB_TOKEN`，项目需启用 Package Registry。Registry 包名来自 `packaging.toml` 的 `package.name`，版本与构建时的 Debian 版本一致。Release 使用原始标签，可选说明文件为 `docs/release-notes/v<版本>.md`；没有说明文件时使用默认描述。发布包不受作业 Artifacts 的一周过期时间限制；已存在同名标签的 Release 时创建会失败。
 
 ## 复用
 
