@@ -30,7 +30,7 @@ default:
     matrix:
       - ROS_DISTRO: [jazzy, humble]
         TARGET_ARCH: [amd64]
-        ROS_IMAGE_REPOSITORY: [ros]
+        ROS_IMAGE_REPOSITORY: [registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros]
       - ROS_DISTRO: [jazzy, humble]
         TARGET_ARCH: [arm64]
         ROS_IMAGE_REPOSITORY: [registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros]
