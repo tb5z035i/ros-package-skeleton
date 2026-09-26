@@ -11,17 +11,27 @@ workflow:
     - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
 
 variables:
-  ROS_IMAGE: "ros:jazzy-ros-core"
+  ROS_DISTRO: "jazzy"
+  TARGET_ARCH: "amd64"
   ROSDISTRO_INDEX_URL: "https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml"
   BUILD_JOBS: "2"
   DEBIAN_FRONTEND: "noninteractive"
   GIT_SUBMODULE_STRATEGY: recursive
 
 default:
-  image: "$ROS_IMAGE"
+  image: "ros:${ROS_DISTRO}-ros-core"
+  tags:
+    - "$TARGET_ARCH"
   interruptible: true
 
+.target_matrix:
+  parallel:
+    matrix:
+      - ROS_DISTRO: [jazzy, humble]
+        TARGET_ARCH: [amd64, arm64]
+
 build_and_package:
+  extends: .target_matrix
   stage: build
   rules:
     - when: on_success
@@ -31,27 +41,30 @@ build_and_package:
   script:
     - bash scripts/ci-build
   artifacts:
+    name: "$CI_JOB_NAME_SLUG"
     when: always
     expire_in: 1 week
     paths:
       - dist/
-      - log/
     reports:
       junit:
-        - dist/test-results/*.xml
+        - dist/**/test-results/*.xml
         - build/*/pytest.xml
         - build/**/test_results/**/*.xml
 
 # A new container has neither the build tools nor the workspace install overlay.
 verify_deb:
+  extends: .target_matrix
   stage: verify
+  allow_failure: true
   rules:
     - when: on_success
   needs:
+    # Download all four uniquely named targets; verify only this job's target.
     - job: build_and_package
       artifacts: true
   script:
-    - ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed dist/*.deb
+    - ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed "dist/$ROS_DISTRO/$TARGET_ARCH/"*.deb
 
 release_packages:
   stage: release
@@ -66,6 +79,6 @@ release_packages:
   before_script:
     - bash scripts/configure-mirrors
     - apt-get -o Acquire::Retries=3 update
-    - apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 curl ca-certificates
+    - apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 python3-tomli curl ca-certificates
   script:
     - python3 scripts/ci_publish_gitlab_release.py

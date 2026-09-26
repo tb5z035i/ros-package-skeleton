@@ -2,7 +2,8 @@
 # Run as the development user or as root in a disposable CI container.
 set -eo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-source /opt/ros/jazzy/setup.bash
+source scripts/ros-environment
+source "$ROS_PREFIX/setup.bash"
 set -u
 
 as_root=()
@@ -23,8 +24,8 @@ retry_download() {
 "${as_root[@]}" bash scripts/configure-mirrors
 export ROSDISTRO_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml
 "${as_root[@]}" apt-get -o Acquire::Retries=3 update
-retry_download rosdep update --rosdistro jazzy
-rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
+retry_download rosdep update --rosdistro "$ROS_DISTRO"
+rosdep install --from-paths src --ignore-src --rosdistro "$ROS_DISTRO" -y
 
 # Apply packaging overrides here too, so local and CI builds agree.
 extra=$(/usr/bin/python3 - <<'PY'

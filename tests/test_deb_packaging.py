@@ -3,9 +3,14 @@ import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from ros_platform import Target
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -15,13 +20,16 @@ SPEC.loader.exec_module(packaging)
 
 
 class StagingTests(unittest.TestCase):
+    distro = 'jazzy'
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.install = self.root / 'install'
         self.install.mkdir()
-        self.destination = self.root / 'payload/opt/ros/jazzy'
+        self.prefix = Path('/opt/ros') / self.distro
+        self.destination = self.root / 'payload' / self.prefix.relative_to('/')
 
     def write(self, name, contents):
         path = self.install / name
@@ -30,7 +38,7 @@ class StagingTests(unittest.TestCase):
         return path
 
     def stage(self):
-        packaging.stage_install(self.install, self.destination, [self.root])
+        packaging.stage_install(self.install, self.destination, [self.root], self.prefix)
 
     def test_package_hooks_relocate_without_shipping_workspace_setup(self):
         self.write('setup.bash', 'must not replace ROS setup')
@@ -44,7 +52,7 @@ class StagingTests(unittest.TestCase):
         self.assertFalse((self.destination / '_local_setup_util_sh.py').exists())
         self.assertFalse((self.destination / '.colcon_install_layout').exists())
         self.assertEqual((self.destination / 'share/example/local_setup.sh').read_text(),
-                         'prefix="/opt/ros/jazzy"\n')
+                         f'prefix="{self.prefix}"\n')
         self.assertEqual((self.destination / 'share/example/package.dsv').read_text(),
                          'source;share/example/local_setup.sh\n')
 
@@ -98,15 +106,17 @@ class StagingTests(unittest.TestCase):
             self.stage()
 
     def test_installed_underlay_file_collision_is_rejected(self):
-        from unittest.mock import patch
         self.write('lib/example.txt', 'new content')
         self.stage()
         underlay = self.root / 'underlay'
         (underlay / 'lib').mkdir(parents=True)
         (underlay / 'lib/example.txt').write_text('existing ROS content')
-        with patch.object(packaging, 'PREFIX', underlay):
-            with self.assertRaisesRegex(packaging.PackagingError, 'collides'):
-                packaging.verify_payload(self.destination, [])
+        with self.assertRaisesRegex(packaging.PackagingError, 'collides'):
+            packaging.verify_payload(self.destination, [], underlay)
+
+
+class HumbleStagingTests(StagingTests):
+    distro = 'humble'
 
 
 class DependencyTests(unittest.TestCase):
@@ -117,7 +127,7 @@ class DependencyTests(unittest.TestCase):
                                   for key in ('lt', 'lte', 'eq', 'gte', 'gt')})
 
     def test_internal_and_disabled_dependencies_are_excluded(self):
-        resolver = packaging.Resolver({})
+        resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
         resolver.cache = {'external': ['libexternal1']}
         package = SimpleNamespace(name='example', exec_depends=[
             self.dependency('internal'), self.dependency('disabled', False),
@@ -127,27 +137,46 @@ class DependencyTests(unittest.TestCase):
                          {'libexternal1 (>= 1.2)'})
 
     def test_unresolved_key_fails(self):
-        from unittest.mock import patch
-        resolver = packaging.Resolver({})
+        resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
         with patch.object(packaging, 'run', return_value='#pip\nunavailable\n'):
             with self.assertRaisesRegex(packaging.PackagingError, 'non-APT'):
                 resolver.resolve('unavailable')
 
-    def test_control_includes_conflicts_and_runtime_dependencies(self):
+    def test_rosdep_resolves_for_selected_ubuntu_and_ros_distro(self):
+        for distro, codename in [('jazzy', 'noble'), ('humble', 'jammy')]:
+            with self.subTest(distro=distro):
+                resolver = packaging.Resolver({}, Target(distro, codename, 'arm64'))
+                with patch.object(packaging, 'run', return_value=f'#apt\nros-{distro}-rclpy\n') as run:
+                    self.assertEqual(resolver.resolve('rclpy'), [f'ros-{distro}-rclpy'])
+                    run.assert_called_once_with(
+                        ['rosdep', 'resolve', '--rosdistro', distro, '--os=ubuntu:' + codename, 'rclpy'],
+                        env={}, capture=True)
+
+    def test_control_includes_target_conflicts_and_runtime_dependencies(self):
+        for distro, codename in [('jazzy', 'noble'), ('humble', 'jammy')]:
+            for architecture in ('amd64', 'arm64'):
+                with self.subTest(distro=distro, architecture=architecture):
+                    self.check_metadata(Target(distro, codename, architecture))
+
+    def check_metadata(self, target):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'LICENSE').write_text('Example license')
             stage = root / 'payload'
             stage.mkdir()
-            config = {'package': {'name': 'ros-jazzy-test-bundle',
+            config = {'package': {'name': 'test-bundle',
                                   'maintainer': 'Test <test@example.invalid>',
                                   'description': 'Test bundle', 'license_files': ['LICENSE']}}
             packaging.write_metadata(stage, config, [SimpleNamespace(name='example_node', version='1.0')],
-                                     {'ros-jazzy-ros-core', 'libexample1 (>= 1.2)'}, '1.0-1', 'amd64', root)
+                                     {target.package_name('ros-core'), 'libexample1 (>= 1.2)'},
+                                     '1.0-1', target, root)
             control = (stage / 'DEBIAN/control').read_text()
-            self.assertIn('Conflicts: ros-jazzy-example-node\n', control)
+            self.assertIn(f'Package: ros-{target.distro}-test-bundle\n', control)
+            self.assertIn(f'Architecture: {target.architecture}\n', control)
+            self.assertIn(f'Conflicts: ros-{target.distro}-example-node\n', control)
             self.assertIn('libexample1 (>= 1.2)', control)
-            self.assertIn('example_node 1.0', (stage / 'usr/share/doc/ros-jazzy-test-bundle/workspace-packages').read_text())
+            self.assertIn('example_node 1.0',
+                          (stage / f'usr/share/doc/ros-{target.distro}-test-bundle/workspace-packages').read_text())
             self.assertTrue((stage / 'DEBIAN/md5sums').read_text())
 
 

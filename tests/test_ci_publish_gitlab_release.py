@@ -26,9 +26,9 @@ class PublishTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        (self.root / 'packaging.toml').write_text('[package]\nname = "ros-jazzy-example"\n')
+        (self.root / 'packaging.toml').write_text('[package]\nname = "example-workspace"\n')
         (self.root / 'dist').mkdir()
-        self.filename = 'ros-jazzy-example_1.2.3+test-1_amd64.deb'
+        self.filename = 'ros-jazzy-example-workspace_1.2.3+test-1_amd64.deb'
         (self.root / 'dist' / self.filename).write_bytes(b'debian package contents')
         (self.root / 'dist' / 'test-results.xml').write_text('<testsuites/>')
         self.requests = []
@@ -79,8 +79,8 @@ class PublishTests(unittest.TestCase):
         upload, release = self.requests
         self.assertEqual(upload[1],
                          '/api/v4/projects/group%2Fproject/packages/generic/'
-                         'ros-jazzy-example/1.2.3%2Btest-1/'
-                         'ros-jazzy-example_1.2.3%2Btest-1_amd64.deb')
+                         'example-workspace/1.2.3%2Btest-1/'
+                         'ros-jazzy-example-workspace_1.2.3%2Btest-1_amd64.deb')
         self.assertEqual(upload[3], b'debian package contents')
         for request in self.requests:
             self.assertEqual(request[2]['JOB-TOKEN'], 'test-job-token')
@@ -88,7 +88,7 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(release[2]['Content-Type'], 'application/json')
         payload = json.loads(release[3])
         self.assertEqual(payload['tag_name'], 'v1.2.3+test-1')
-        self.assertEqual(payload['name'], 'ros-jazzy-example v1.2.3+test-1')
+        self.assertEqual(payload['name'], 'example-workspace v1.2.3+test-1')
         self.assertIn('v1.2.3+test-1', payload['description'])
         self.assertEqual(payload['assets']['links'], [{
             'name': self.filename,
@@ -102,7 +102,7 @@ class PublishTests(unittest.TestCase):
         notes.parent.mkdir(parents=True)
         notes.write_text('# Release notes\n修复节点。\n', encoding='utf-8')
         self.publish()
-        self.assertIn('/ros-jazzy-example/2.0-1/', self.requests[0][1])
+        self.assertIn('/example-workspace/2.0-1/', self.requests[0][1])
         payload = json.loads(self.requests[-1][3])
         self.assertEqual(payload['tag_name'], '1.2.3')
         self.assertEqual(payload['description'], notes.read_text(encoding='utf-8'))
@@ -112,6 +112,32 @@ class PublishTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.publish()
         self.assertIn('no .deb files', self.stderr.getvalue())
+        self.assertEqual(self.requests, [])
+
+    def test_all_four_targets_are_linked_in_one_release(self):
+        (self.root / 'dist' / self.filename).unlink()
+        filenames = set()
+        for distro in ('jazzy', 'humble'):
+            for architecture in ('amd64', 'arm64'):
+                directory = self.root / 'dist' / distro / architecture
+                directory.mkdir(parents=True)
+                name = f'ros-{distro}-example-workspace_1.2.3+test-1_{architecture}.deb'
+                (directory / name).write_bytes(b'package')
+                filenames.add(name)
+        self.publish()
+        self.assertEqual([request[0] for request in self.requests], ['PUT'] * 4 + ['POST'])
+        payload = json.loads(self.requests[-1][3])
+        self.assertEqual(payload['name'], 'example-workspace v1.2.3+test-1')
+        self.assertEqual({link['name'] for link in payload['assets']['links']}, filenames)
+        self.assertEqual(len({link['url'] for link in payload['assets']['links']}), 4)
+
+    def test_duplicate_filenames_fail_before_upload(self):
+        directory = self.root / 'dist' / 'duplicate'
+        directory.mkdir()
+        (directory / self.filename).write_bytes(b'duplicate package')
+        with self.assertRaises(SystemExit):
+            self.publish()
+        self.assertIn('duplicate .deb filenames', self.stderr.getvalue())
         self.assertEqual(self.requests, [])
 
     def test_missing_tag_or_token_fails_before_any_request(self):

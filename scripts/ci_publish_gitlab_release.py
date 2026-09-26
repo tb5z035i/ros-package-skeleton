@@ -8,7 +8,10 @@ import os
 import subprocess
 import sys
 import tempfile
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Ubuntu 22.04 ships Python 3.10.
+    import tomli as tomllib
 from pathlib import Path
 from urllib.parse import quote
 
@@ -38,9 +41,11 @@ def curl(*args: str, capture_output: bool = False) -> subprocess.CompletedProces
 
 
 def find_artifacts(root: Path) -> list[Path]:
-    files = sorted(path for path in root.glob("*.deb") if path.is_file())
+    files = sorted(path for path in root.rglob("*.deb") if path.is_file())
     if not files:
         die(f"no .deb files under {root}")
+    if len({path.name for path in files}) != len(files):
+        die("duplicate .deb filenames would overwrite registry artifacts")
     return files
 
 

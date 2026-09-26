@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Configure the Noble/Jazzy environment before any APT or rosdep downloads.
+# Configure the selected Ubuntu/ROS environment before APT or rosdep downloads.
 set -euo pipefail
 if [[ $EUID != 0 ]]; then
     echo 'Run this script as root (sudo bash scripts/configure-mirrors).' >&2
     exit 2
 fi
-source /etc/os-release
-if [[ ${ID:-} != ubuntu || ${VERSION_CODENAME:-} != noble ]]; then
-    echo 'Mirror configuration requires Ubuntu 24.04 (Noble).' >&2
-    exit 2
-fi
+source "$(dirname "${BASH_SOURCE[0]}")/ros-environment"
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tuna=https://mirrors.tuna.tsinghua.edu.cn
 
@@ -28,8 +24,8 @@ done
 install -m 0644 "$root/.devcontainer/ros.key" /usr/share/keyrings/ros-archive-keyring.gpg
 rm -f /etc/apt/sources.list.d/ros2.sources /etc/apt/sources.list.d/ros2.list \
     /etc/apt/sources.list.d/ros2-latest.list
-printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s/ros2/ubuntu noble main\n' \
-    "$(dpkg --print-architecture)" "$tuna" > /etc/apt/sources.list.d/ros2.list
+printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s/ros2/ubuntu %s main\n' \
+    "$DEB_ARCH" "$tuna" "$UBUNTU_CODENAME" > /etc/apt/sources.list.d/ros2.list
 
 # TUNA's source list already points all rosdep YAML URLs at its GitHub RAW mirror.
 sources=$(mktemp)

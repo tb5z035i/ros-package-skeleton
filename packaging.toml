@@ -1,7 +1,8 @@
 [package]
-name = "ros-jazzy-example-workspace"
+# Workspace name; Debian packages are named ros-<distro>-<name>.
+name = "example-workspace"
 maintainer = "Your Team <team@example.com>"
-description = "ROS 2 Jazzy workspace with rclpy and rclcpp examples"
+description = "ROS 2 workspace with rclpy and rclcpp examples"
 license_files = ["src/hello_py/LICENSE", "src/hello_cpp/LICENSE"]
 
 [dependencies]

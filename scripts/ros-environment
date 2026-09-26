@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Source this file to select and validate the current ROS/Ubuntu/CPU target.
+if ! ros_platform_env=$(/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/ros_platform.py"); then
+    return 1
+fi
+eval "$ros_platform_env"
+unset ros_platform_env

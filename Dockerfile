@@ -1,4 +1,5 @@
-ARG ROS_IMAGE=ros:jazzy-ros-core
+ARG ROS_DISTRO=jazzy
+ARG ROS_IMAGE=ros:${ROS_DISTRO}-ros-core
 FROM ${ROS_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -6,7 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV ROSDISTRO_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml
 
 COPY .devcontainer/ros.key /tmp/ros-workspace/.devcontainer/ros.key
-COPY scripts/configure-mirrors scripts/install-build-tools /tmp/ros-workspace/scripts/
+COPY scripts/configure-mirrors scripts/install-build-tools scripts/ros-environment scripts/ros_platform.py /tmp/ros-workspace/scripts/
 RUN bash /tmp/ros-workspace/scripts/install-build-tools \
     && rm -rf /tmp/ros-workspace \
     && rm -rf /var/lib/apt/lists/*
@@ -27,7 +28,7 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && chown ros:ros /workspaces/ros_ws
 
 USER ros
-RUN echo 'source /opt/ros/jazzy/setup.bash' >> ~/.bashrc \
+RUN echo 'source /opt/ros/$ROS_DISTRO/setup.bash' >> ~/.bashrc \
     && echo 'if [ -f /workspaces/ros_ws/install/setup.bash ]; then source /workspaces/ros_ws/install/setup.bash; fi' >> ~/.bashrc
 
 WORKDIR /workspaces/ros_ws

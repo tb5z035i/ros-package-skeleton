@@ -7,16 +7,21 @@ if [[ ${ROS_DEB_TEST_DISPOSABLE:-} != 1 || $EUID != 0 || $# != 1 ]]; then
     exit 2
 fi
 deb=$(realpath "$1")
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$script_dir/../scripts/ros-environment"
 package=$(dpkg-deb -f "$deb" Package)
+if [[ $(dpkg-deb -f "$deb" Architecture) != "$DEB_ARCH" || $package != ros-"$ROS_DISTRO"-* ]]; then
+    echo "Package does not match $ROS_DISTRO/$DEB_ARCH: $deb" >&2
+    exit 2
+fi
 if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
     echo "Refusing to replace an already installed package: $package" >&2
     exit 2
 fi
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 cp "$script_dir/smoke_nodes.py" "$scratch/smoke_nodes.py"
-find /opt/ros/jazzy -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/setup.sha256"
+find "$ROS_PREFIX" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/setup.sha256"
 bash "$script_dir/../scripts/configure-mirrors"
 apt-get -o Acquire::Retries=3 update
 apt-get -o Acquire::Retries=3 install -y --no-install-recommends "$deb"
@@ -24,15 +29,15 @@ apt-get -o Acquire::Retries=3 install -y --no-install-recommends "$deb"
 # Only the system underlay is sourced; neither source code nor build output is used.
 cd "$scratch"
 env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 \
-    PYTHONDONTWRITEBYTECODE=1 ROS_SMOKE_EXPECT_PREFIX=/opt/ros/jazzy \
-    bash --noprofile --norc -ec 'source /opt/ros/jazzy/setup.bash; python3 smoke_nodes.py'
+    PYTHONDONTWRITEBYTECODE=1 ROS_SMOKE_EXPECT_PREFIX="$ROS_PREFIX" ROS_PREFIX="$ROS_PREFIX" \
+    bash --noprofile --norc -ec 'source "$ROS_PREFIX/setup.bash"; python3 smoke_nodes.py'
 sha256sum --check "$scratch/setup.sha256"
 apt-get remove -y "$package"
 sha256sum --check "$scratch/setup.sha256"
-env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 ROS_PREFIX="$ROS_PREFIX" \
     bash --noprofile --norc <<'CHECK'
 set -e
-source /opt/ros/jazzy/setup.bash
+source "$ROS_PREFIX/setup.bash"
 for package in hello_py hello_cpp; do
     if ros2 pkg prefix "$package"; then
         echo "Package still discoverable after removal: $package" >&2

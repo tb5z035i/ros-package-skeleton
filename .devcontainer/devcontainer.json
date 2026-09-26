@@ -1,8 +1,11 @@
 {
-  "name": "ROS 2 Jazzy workspace",
+  "name": "ROS 2 workspace (Jazzy / Humble)",
   "build": {
     "dockerfile": "../Dockerfile",
-    "context": ".."
+    "context": "..",
+    "args": {
+      "ROS_DISTRO": "${localEnv:ROS_WORKSPACE_DISTRO:jazzy}"
+    }
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/ros_ws,type=bind",
   "workspaceFolder": "/workspaces/ros_ws",

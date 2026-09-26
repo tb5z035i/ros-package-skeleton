@@ -1,4 +1,4 @@
-"""Native, staged Debian packaging for a ROS 2 Jazzy colcon workspace."""
+"""Staged Debian packaging for Jazzy/Noble and Humble/Jammy ROS 2 workspaces."""
 
 from __future__ import annotations
 
@@ -12,10 +12,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Ubuntu 22.04 ships Python 3.10.
+    import tomli as tomllib
+
+from ros_platform import detect_target
 
 
-PREFIX = Path('/opt/ros/jazzy')
 PACKAGE_NAME = re.compile(r'[a-z0-9][a-z0-9+.-]+\Z')
 ROOT_GENERATED = re.compile(
     r'(?:setup\..+|local_setup\..+|_local_setup_util.*\.py|'
@@ -35,7 +39,7 @@ def run(args, *, env=None, cwd=None, capture=False):
         stdout=subprocess.PIPE if capture else None, text=True).stdout
 
 
-def clean_environment(work):
+def clean_environment(work, target):
     # Do not inherit overlays, virtualenvs, compiler flags, or colcon defaults.
     env = {key: value for key, value in os.environ.items() if key in {
         'HOME', 'USER', 'LOGNAME', 'TERM', 'http_proxy', 'https_proxy',
@@ -45,7 +49,7 @@ def clean_environment(work):
     env.update(PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', PYTHONNOUSERSITE='1')
     result = subprocess.run(
         ['/bin/bash', '--noprofile', '--norc', '-c',
-         'set -e; source "$1" >&2; env -0', 'release', str(PREFIX / 'setup.bash')],
+         'set -e; source "$1" >&2; env -0', 'release', str(target.prefix / 'setup.bash')],
         env=env, check=True, stdout=subprocess.PIPE)
     env = dict(entry.split('=', 1) for entry in result.stdout.decode().split('\0') if entry)
     env['COLCON_HOME'] = str(work / 'colcon-home')
@@ -89,7 +93,7 @@ def discover(root, work, env):
     if not paths:
         raise PackagingError('No packages discovered under src/')
     packages = []
-    context = {'ROS_VERSION': '2', 'ROS_DISTRO': 'jazzy', 'ROS_PYTHON_VERSION': '3'}
+    context = {'ROS_VERSION': '2', 'ROS_DISTRO': env['ROS_DISTRO'], 'ROS_PYTHON_VERSION': '3'}
     for path in paths:
         manifest = Path(path) / 'package.xml'
         if not manifest.is_file():
@@ -106,13 +110,15 @@ def discover(root, work, env):
 
 
 class Resolver:
-    def __init__(self, env):
+    def __init__(self, env, target):
         self.env = env
+        self.target = target
         self.cache = {}
 
     def resolve(self, key):
         if key not in self.cache:
-            output = run(['rosdep', 'resolve', '--rosdistro', 'jazzy', '--os=ubuntu:noble', key],
+            output = run(['rosdep', 'resolve', '--rosdistro', self.target.distro,
+                          '--os=ubuntu:' + self.target.codename, key],
                          env=self.env, capture=True)
             lines = [line.strip() for line in output.splitlines() if line.strip()]
             if not lines or lines[0] != '#apt':
@@ -162,7 +168,7 @@ def known_metadata(relative):
             relative.parts[:3] == ('share', 'ament_index', 'resource_index'))
 
 
-def stage_install(install, destination, forbidden):
+def stage_install(install, destination, forbidden, prefix):
     destination.mkdir(parents=True)
     for child in install.iterdir():
         if ROOT_GENERATED.fullmatch(child.name):
@@ -182,9 +188,9 @@ def stage_install(install, destination, forbidden):
         if not path.is_symlink():
             continue
         link = os.readlink(path)
-        for prefix in (install, PREFIX):
+        for link_prefix in (install, prefix):
             try:
-                inside = Path(link).relative_to(prefix)
+                inside = Path(link).relative_to(link_prefix)
             except ValueError:
                 continue
             path.unlink()
@@ -213,7 +219,7 @@ def stage_install(install, destination, forbidden):
             continue
         data = path.read_bytes()
         if b'\0' not in data and known_metadata(relative):
-            data = data.replace(original, str(PREFIX).encode())
+            data = data.replace(original, str(prefix).encode())
             path.write_bytes(data)
         if b'\0' not in data and any(needle in data for needle in needles):
             raise PackagingError(f'Unrelocated source/build reference in {relative}; fix its install rules')
@@ -229,7 +235,7 @@ def stage_install(install, destination, forbidden):
                 raise PackagingError(f'Build path in ELF interpreter: {relative}')
 
 
-def verify_payload(destination, packages):
+def verify_payload(destination, packages, prefix):
     for path in destination.iterdir():
         if ROOT_GENERATED.fullmatch(path.name):
             raise PackagingError(f'Workspace setup file included in payload: {path.name}')
@@ -243,18 +249,18 @@ def verify_payload(destination, packages):
     for path in destination.rglob('*'):
         if path.is_dir() and not path.is_symlink():
             continue
-        installed = PREFIX / path.relative_to(destination)
+        installed = prefix / path.relative_to(destination)
         if installed.exists() or installed.is_symlink():
             raise PackagingError(f'Payload collides with an installed file: {installed}')
 
 
-def elf_dependencies(stage, package_name, work, env):
-    destination = stage / PREFIX.relative_to('/')
+def elf_dependencies(stage, package_name, work, env, prefix):
+    destination = stage / prefix.relative_to('/')
     binaries = []
     shlibs = set()
     bundled_sonames = set()
     unversioned_needed = {}
-    library_dirs = {str(PREFIX / 'lib')}
+    library_dirs = {str(prefix / 'lib')}
     for path in sorted(destination.rglob('*')):
         if not path.is_file() or path.is_symlink():
             continue
@@ -320,9 +326,9 @@ def elf_dependencies(stage, package_name, work, env):
     return dependencies
 
 
-def write_metadata(stage, config, packages, dependencies, version, architecture, root):
+def write_metadata(stage, config, packages, dependencies, version, target, root):
     package = config['package']
-    name = package['name']
+    name = target.package_name(package['name'])
     control_dir = stage / 'DEBIAN'
     control_dir.mkdir(exist_ok=True)
     doc = stage / 'usr/share/doc' / name
@@ -336,9 +342,9 @@ def write_metadata(stage, config, packages, dependencies, version, architecture,
     (doc / 'copyright').write_text('\n\n'.join(notices))
     (doc / 'workspace-packages').write_text(''.join(
         f'{p.name} {p.version}\n' for p in packages))
-    conflicts = sorted({'ros-jazzy-' + p.name.replace('_', '-') for p in packages} - {name})
+    conflicts = sorted({target.package_name(p.name.replace('_', '-')) for p in packages} - {name})
     size = sum(path.lstat().st_size for path in stage.rglob('*') if not path.is_dir())
-    fields = [f'Package: {name}', f'Version: {version}', f'Architecture: {architecture}',
+    fields = [f'Package: {name}', f'Version: {version}', f'Architecture: {target.architecture}',
               f'Maintainer: {package["maintainer"]}', 'Section: misc', 'Priority: optional',
               f'Installed-Size: {(size + 1023) // 1024}',
               'Depends: ' + ', '.join(sorted(dependencies))]
@@ -361,11 +367,10 @@ def write_metadata(stage, config, packages, dependencies, version, architecture,
 def build(args):
     root = args.workspace.resolve()
     config = load_config(root / 'packaging.toml', args.maintainer)
-    release = Path('/etc/os-release').read_text()
-    if 'ID=ubuntu\n' not in release or 'VERSION_CODENAME=noble\n' not in release:
-        raise PackagingError('Release builds require Ubuntu 24.04 (Noble)')
-    if not (PREFIX / 'setup.bash').is_file():
-        raise PackagingError('Install ROS 2 Jazzy before building')
+    target = detect_target()
+    package_name = target.package_name(config['package']['name'])
+    if not (target.prefix / 'setup.bash').is_file():
+        raise PackagingError(f'Install ROS 2 {target.distro} before building')
     if not re.fullmatch(r'[0-9][A-Za-z0-9.+:~\-]*', args.version):
         raise PackagingError('Invalid Debian version')
     run(['dpkg', '--validate-version', args.version])
@@ -378,15 +383,15 @@ def build(args):
     success = False
     print(f'Release work directory: {work}', flush=True)
     try:
-        env = clean_environment(work)
+        env = clean_environment(work, target)
         env['CMAKE_BUILD_PARALLEL_LEVEL'] = str(args.jobs)
         env['MAKEFLAGS'] = f'-j{args.jobs} -l{args.jobs}'
         packages = discover(root, work, env)
-        resolver = Resolver(env)
+        resolver = Resolver(env, target)
         extra = config.get('dependencies', {})
         runtime = resolver.dependencies(packages, RUNTIME_TYPES)
         runtime.update(extra.get('runtime', []))
-        runtime.add('ros-jazzy-ros-core')
+        runtime.add(target.package_name('ros-core'))
         build_dependencies = resolver.dependencies(packages, BUILD_TYPES) | runtime
         build_dependencies.update(extra.get('build', []))
         check_dependencies(build_dependencies, work, env)
@@ -399,16 +404,15 @@ def build(args):
         # dpkg-shlibdeps requires a source control file even for a binary-only bundle.
         (work / 'debian').mkdir()
         (work / 'debian/control').write_text(
-            f'Source: {config["package"]["name"]}\n\n'
-            f'Package: {config["package"]["name"]}\nArchitecture: any\nDescription: workspace\n')
+            f'Source: {package_name}\n\n'
+            f'Package: {package_name}\nArchitecture: any\nDescription: workspace\n')
         stage = work / 'payload'
-        destination = stage / PREFIX.relative_to('/')
-        stage_install(install, destination, [work, root])
-        verify_payload(destination, packages)
-        runtime.update(elf_dependencies(stage, config['package']['name'], work, env))
-        architecture = run(['dpkg', '--print-architecture'], capture=True).strip()
-        write_metadata(stage, config, packages, runtime, args.version, architecture, root)
-        name = f'{config["package"]["name"]}_{args.version.split(":")[-1]}_{architecture}.deb'
+        destination = stage / target.prefix.relative_to('/')
+        stage_install(install, destination, [work, root], target.prefix)
+        verify_payload(destination, packages, target.prefix)
+        runtime.update(elf_dependencies(stage, package_name, work, env, target.prefix))
+        write_metadata(stage, config, packages, runtime, args.version, target, root)
+        name = f'{package_name}_{args.version.split(":")[-1]}_{target.architecture}.deb'
         temporary_deb = work / name
         run(['dpkg-deb', '--build', '--root-owner-group', stage, temporary_deb], env=env)
         output = (args.output or root / 'dist').resolve()

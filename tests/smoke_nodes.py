@@ -13,7 +13,10 @@ from std_msgs.msg import String
 
 class PublisherTests(unittest.TestCase):
     def check_publisher(self, package, expected):
-        os.environ.setdefault('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+        if os.environ.get('ROS_DISTRO') == 'humble':
+            os.environ.setdefault('ROS_LOCALHOST_ONLY', '1')
+        else:
+            os.environ.setdefault('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
         os.environ.setdefault('ROS_DOMAIN_ID', '108')
         prefix = os.environ.get('ROS_SMOKE_EXPECT_PREFIX')
         if prefix:
