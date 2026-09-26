@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>hello_cpp</name>
+  <version>0.1.0</version>
+  <description>Minimal rclcpp publisher example.</description>
+  <maintainer email="team@example.com">Your Team</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

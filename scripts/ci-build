@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -eo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+source /opt/ros/jazzy/setup.bash
+
+export CMAKE_BUILD_PARALLEL_LEVEL=${BUILD_JOBS:-2}
+export MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}"
+mkdir -p dist/test-results
+/usr/bin/python3 -m pytest -q tests/test_deb_packaging.py \
+    --junitxml=dist/test-results/packaging.xml
+colcon build --base-paths src --symlink-install --executor sequential \
+    --event-handlers console_direct+ \
+    --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+source install/setup.bash
+colcon test --base-paths src --executor sequential \
+    --event-handlers console_direct+ --return-code-on-test-failure
+colcon test-result --verbose
+/usr/bin/python3 -m pytest -q tests/smoke_nodes.py \
+    --junitxml=dist/test-results/nodes.xml
+
+# Release tags such as v0.1.0-1 become Debian versions; other builds sort below 0.1.0.
+version=${DEB_VERSION:-}
+if [[ -z $version ]]; then
+    if [[ -n ${CI_COMMIT_TAG:-} ]]; then
+        version=${CI_COMMIT_TAG#v}
+    else
+        version="0.1.0~ci${CI_PIPELINE_IID:-0}+${CI_COMMIT_SHORT_SHA:-local}-1"
+    fi
+fi
+./scripts/build-deb --version "$version" --jobs "$CMAKE_BUILD_PARALLEL_LEVEL"

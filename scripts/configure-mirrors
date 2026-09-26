@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Configure the Noble/Jazzy environment before any APT or rosdep downloads.
+set -euo pipefail
+if [[ $EUID != 0 ]]; then
+    echo 'Run this script as root (sudo bash scripts/configure-mirrors).' >&2
+    exit 2
+fi
+source /etc/os-release
+if [[ ${ID:-} != ubuntu || ${VERSION_CODENAME:-} != noble ]]; then
+    echo 'Mirror configuration requires Ubuntu 24.04 (Noble).' >&2
+    exit 2
+fi
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+tuna=https://mirrors.tuna.tsinghua.edu.cn
+
+# Preserve suites/components and support both deb822 and legacy source files.
+# Ubuntu security updates use TUNA too; ARM uses the ubuntu-ports mirror.
+for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    [[ -f $source_file ]] || continue
+    sed -E -i \
+        -e "s#https?://([[:alnum:]-]+\\.)?archive\\.ubuntu\\.com/ubuntu#$tuna/ubuntu#g" \
+        -e "s#https?://security\\.ubuntu\\.com/ubuntu#$tuna/ubuntu#g" \
+        -e "s#https?://ports\\.ubuntu\\.com/ubuntu-ports#$tuna/ubuntu-ports#g" \
+        "$source_file"
+done
+
+# Remove the base image's ROS source (which may have an embedded signing key).
+install -m 0644 "$root/.devcontainer/ros.key" /usr/share/keyrings/ros-archive-keyring.gpg
+rm -f /etc/apt/sources.list.d/ros2.sources /etc/apt/sources.list.d/ros2.list \
+    /etc/apt/sources.list.d/ros2-latest.list
+printf 'deb [arch=%s signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] %s/ros2/ubuntu noble main\n' \
+    "$(dpkg --print-architecture)" "$tuna" > /etc/apt/sources.list.d/ros2.list
+
+# TUNA's source list already points all rosdep YAML URLs at its GitHub RAW mirror.
+sources=$(mktemp)
+trap 'rm -f "$sources"' EXIT
+curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 60 \
+    "$tuna/github-raw/ros/rosdistro/master/rosdep/sources.list.d/20-default.list" \
+    -o "$sources"
+install -d /etc/ros/rosdep/sources.list.d /etc/xdg/rosdistro
+install -m 0644 "$sources" /etc/ros/rosdep/sources.list.d/20-default.list
+
+# System fallback also covers direct rosdep/build-deb commands in a fresh shell.
+printf 'index_url: %s/rosdistro/index-v4.yaml\n' "$tuna" \
+    > /etc/xdg/rosdistro/config.yaml
+echo 'Ubuntu, ROS APT, and rosdep sources configured for TUNA.'

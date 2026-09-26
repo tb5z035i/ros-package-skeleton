@@ -1,0 +1,53 @@
+stages:
+  - build
+  - verify
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
+
+variables:
+  ROS_IMAGE: "ros:jazzy-ros-core"
+  ROSDISTRO_INDEX_URL: "https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml"
+  BUILD_JOBS: "2"
+  DEBIAN_FRONTEND: "noninteractive"
+  GIT_SUBMODULE_STRATEGY: recursive
+
+default:
+  image: "$ROS_IMAGE"
+  interruptible: true
+
+build_and_package:
+  stage: build
+  rules:
+    - when: on_success
+  before_script:
+    - bash scripts/install-build-tools
+    - bash scripts/install-deps
+  script:
+    - bash scripts/ci-build
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - dist/
+      - log/
+    reports:
+      junit:
+        - dist/test-results/*.xml
+        - build/*/pytest.xml
+        - build/**/test_results/**/*.xml
+
+# A new container has neither the build tools nor the workspace install overlay.
+verify_deb:
+  stage: verify
+  rules:
+    - when: on_success
+  needs:
+    - job: build_and_package
+      artifacts: true
+  script:
+    - ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed dist/*.deb

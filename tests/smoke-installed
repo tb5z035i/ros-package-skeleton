@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Install/remove only in a disposable container, never on the development host.
+set -euo pipefail
+if [[ ${ROS_DEB_TEST_DISPOSABLE:-} != 1 || $EUID != 0 || $# != 1 ]]; then
+    echo 'Usage (disposable container, as root):' >&2
+    echo '  ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed dist/package.deb' >&2
+    exit 2
+fi
+deb=$(realpath "$1")
+package=$(dpkg-deb -f "$deb" Package)
+if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed'; then
+    echo "Refusing to replace an already installed package: $package" >&2
+    exit 2
+fi
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cp "$script_dir/smoke_nodes.py" "$scratch/smoke_nodes.py"
+find /opt/ros/jazzy -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/setup.sha256"
+bash "$script_dir/../scripts/configure-mirrors"
+apt-get -o Acquire::Retries=3 update
+apt-get -o Acquire::Retries=3 install -y --no-install-recommends "$deb"
+
+# Only the system underlay is sourced; neither source code nor build output is used.
+cd "$scratch"
+env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 ROS_SMOKE_EXPECT_PREFIX=/opt/ros/jazzy \
+    bash --noprofile --norc -ec 'source /opt/ros/jazzy/setup.bash; python3 smoke_nodes.py'
+sha256sum --check "$scratch/setup.sha256"
+apt-get remove -y "$package"
+sha256sum --check "$scratch/setup.sha256"
+env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    bash --noprofile --norc <<'CHECK'
+set -e
+source /opt/ros/jazzy/setup.bash
+for package in hello_py hello_cpp; do
+    if ros2 pkg prefix "$package"; then
+        echo "Package still discoverable after removal: $package" >&2
+        exit 1
+    fi
+done
+ros2 pkg prefix std_msgs
+CHECK
+echo 'Debian install, publication, removal, and ROS underlay checks passed.'

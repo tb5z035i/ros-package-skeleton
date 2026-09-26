@@ -1,0 +1,48 @@
+{
+  "name": "ROS 2 Jazzy workspace",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/ros_ws,type=bind",
+  "workspaceFolder": "/workspaces/ros_ws",
+  "remoteUser": "ros",
+  "updateRemoteUserUID": true,
+  "runArgs": [
+    "--network=host",
+    "--device-cgroup-rule=c 81:* rmw",
+    "--device-cgroup-rule=c 189:* rmw",
+    "--group-add=${localEnv:ROS_CAMERA_VIDEO_GID:44}",
+    "--group-add=${localEnv:ROS_CAMERA_USB_GID:0}"
+  ],
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "XAUTHORITY": "/run/ros-workspace-host/Xauthority",
+    "QT_QPA_PLATFORM": "xcb",
+    "QT_X11_NO_MITSHM": "1",
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "HOST_CODEX_DIR": "${localEnv:HOME}/.codex"
+  },
+  "mounts": [
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.devcontainer/.local,target=/run/ros-workspace-host,type=bind,readonly",
+    "source=/dev,target=/dev,type=bind",
+    "source=/run/udev,target=/run/udev,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex,target=/home/ros/.codex,type=bind"
+  ],
+  "initializeCommand": ["bash", "${localWorkspaceFolder}/.devcontainer/initialize-host.sh"],
+  "postCreateCommand": "bash scripts/install-deps",
+  "postStartCommand": ["bash", "/workspaces/ros_ws/.devcontainer/link-codex.sh"],
+  "postAttachCommand": ["bash", "/workspaces/ros_ws/.devcontainer/link-codex.sh"],
+  "waitFor": "postStartCommand",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools", "ms-python.python"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+      }
+    }
+  }
+}
