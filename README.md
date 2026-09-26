@@ -23,7 +23,7 @@
 
 默认使用 Jazzy；使用 Humble 时，在启动 VS Code 的宿主机环境中设置 `ROS_WORKSPACE_DISTRO=humble`，再重建开发容器。容器架构默认跟随宿主机。切换 ROS 发行版或架构时，先清理旧的 `build/`、`install/`、`log/`，避免复用不兼容的构建产物。
 
-Dockerfile（需要 BuildKit，通过 [`TARGETARCH`](https://docs.docker.com/reference/dockerfile/#automatic-platform-args-in-the-global-scope) 选择架构）和 CI 使用相同的基础镜像映射：
+本地 Dockerfile（需要 BuildKit，通过 [`TARGETARCH`](https://docs.docker.com/reference/dockerfile/#automatic-platform-args-in-the-global-scope) 选择架构）使用以下基础镜像映射；CI 镜像配置见下文「GitLab 云端构建」：
 
 | ROS 2 | 架构 | 基础镜像 |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ for distro in jazzy humble; do
 done
 ```
 
-[`docker image inspect --platform`](https://docs.docker.com/reference/cli/docker/image/inspect/) 需要 Docker API 1.49+，显式检查 ARM64，避免本地同时缓存多个架构时检查到宿主机架构。[`docker push --platform`](https://docs.docker.com/reference/cli/docker/image/push/) 需要 Docker API 1.46+，确保仅发布 ARM64 清单。开发宿主机和 ARM64 Runner 必须具有此私有镜像的拉取权限；同项目 CI 可使用内置 Registry 认证，跨项目需配置 job token 允许列表和权限，或在 Runner / `DOCKER_AUTH_CONFIG` 中配置凭据，参见 [GitLab 私有镜像认证](https://docs.gitlab.com/ci/docker/using_docker_images/#access-an-image-from-a-private-container-registry)。
+[`docker image inspect --platform`](https://docs.docker.com/reference/cli/docker/image/inspect/) 需要 Docker API 1.49+，显式检查 ARM64，避免本地同时缓存多个架构时检查到宿主机架构。[`docker push --platform`](https://docs.docker.com/reference/cli/docker/image/push/) 需要 Docker API 1.46+，确保仅发布 ARM64 清单。开发宿主机必须通过 `docker login` 获得私有镜像的拉取权限；CI 使用 GitLab 中配置的 `ROS_IMAGE_ACCESS_KEY`，详见下文。
 
 ```bash
 colcon build --symlink-install --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -122,7 +122,9 @@ ros2 run hello_py talker
 
 在作业的 **Artifacts** 下载 `dist/<发行版>/<架构>/*.deb`，对应测试报告和构建日志位于同一目标目录，保留一周。自建 Linux Docker/Kubernetes Runner 必须按真实架构分别设置 **`amd64`**、**`arm64`** 标签；每个目标通过 `TARGET_ARCH` 选择对应 Runner，发布作业使用 `amd64`。Runner 以 root 用户运行容器，并能访问 Docker Hub、极狐 GitLab Registry 和 TUNA 镜像站；无需 Docker-in-Docker、QEMU 或特权容器。脚本会检查容器实际架构与 `TARGET_ARCH` 一致。
 
-普通提交生成 `0.1.0~ci<流水线编号>+<提交>-1` 版本，发布标签使用 `v0.1.0-1` 等合法 Debian 版本。可通过 CI 变量 `DEB_VERSION` 覆盖版本、`BUILD_JOBS` 调整并行度。CI 矩阵通过 `ROS_IMAGE_REPOSITORY` 为每种 ROS/架构组合选择上述基础镜像，发布作业默认使用公开 Jazzy amd64 镜像。本地 Docker 构建通过 `--platform` 自动选择对应基础镜像，支持 `--build-arg ROS_DISTRO=humble` 或 `--build-arg ROS_IMAGE=<对应环境的镜像>` 覆盖。示例 CI 配置参考 [GitLab YAML 文档](https://docs.gitlab.com/ci/yaml/)。
+普通提交生成 `0.1.0~ci<流水线编号>+<提交>-1` 版本，发布标签使用 `v0.1.0-1` 等合法 Debian 版本。可通过 CI 变量 `DEB_VERSION` 覆盖版本、`BUILD_JOBS` 调整并行度。CI 构建和验证矩阵通过 `ROS_IMAGE_REPOSITORY` 为两种架构统一选择 `registry.jihulab.com/discoverrobotics/s2-restricted/data-factory/registry/ros`，使用对应发行版的 `jazzy-ros-core` / `humble-ros-core` 标签；发布作业默认使用公开 Jazzy amd64 镜像。本地 Docker 构建通过 `--platform` 自动选择对应基础镜像，支持 `--build-arg ROS_DISTRO=humble` 或 `--build-arg ROS_IMAGE=<对应环境的镜像>` 覆盖。示例 CI 配置参考 [GitLab YAML 文档](https://docs.gitlab.com/ci/yaml/)。
+
+私有 ROS 镜像的访问令牌已在 GitLab **Settings > CI/CD > Variables** 中配置为 `ROS_IMAGE_ACCESS_KEY`，值为原始访问令牌（变量类型为 **Variable**，不是 File、Base64 或 Docker JSON），需具有镜像仓库的 `read_registry` 权限。变量应设为 **Masked**，且作用域和 Protected 设置需允许目标分支、合并请求及标签流水线读取它；不可用时 Runner 无法拉取私有镜像。`.gitlab-ci.yml` 将其作为 `DOCKER_AUTH_CONFIG` 中 `registry.jihulab.com` 的密码，用户名固定为 `oauth2`；对于个人访问令牌，GitLab 要求用户名非空，但不验证其值，参见 [GitLab 访问令牌说明](https://docs.gitlab.com/user/profile/personal_access_tokens/)。Runner 在启动作业容器前读取此认证配置，因此无需在 `before_script` 中执行 `docker login`，参见 [GitLab 私有镜像认证](https://docs.gitlab.com/ci/docker/using_docker_images/#access-an-image-from-a-private-container-registry)。令牌值仅保存在 GitLab 变量中。
 
 发布使用内置 `CI_JOB_TOKEN`，项目需启用 Package Registry。Registry 包名来自 `packaging.toml` 的 `package.name`（例如 `example-workspace`），版本与构建时的 Debian 版本一致；四个产物以不同文件名存储。Release 标题使用工作空间名和原始标签，例如 `example-workspace v0.1.0`。Release 使用原始标签，可选说明文件为 `docs/release-notes/v<版本>.md`；没有说明文件时使用默认描述。发布包不受作业 Artifacts 的一周过期时间限制；已存在同名标签的 Release 时创建会失败。
 

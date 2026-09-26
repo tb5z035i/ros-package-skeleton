@@ -14,6 +14,9 @@ variables:
   ROS_DISTRO: "jazzy"
   TARGET_ARCH: "amd64"
   ROS_IMAGE_REPOSITORY: "ros"
+  # GitLab supplies the raw access token; the runner needs auth before pulling image.
+  DOCKER_AUTH_CONFIG: >-
+    {"auths":{"registry.jihulab.com":{"username":"oauth2","password":"${ROS_IMAGE_ACCESS_KEY}"}}}
   ROSDISTRO_INDEX_URL: "https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml"
   BUILD_JOBS: "2"
   DEBIAN_FRONTEND: "noninteractive"
