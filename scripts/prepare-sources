@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Prepare root and recursive submodule assets in development and CI.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Scope temporary credentials to this GitLab host; do not persist the token.
+if [[ -n ${CI_JOB_TOKEN:-} ]]; then
+    export GIT_TERMINAL_PROMPT=0
+    count=${GIT_CONFIG_COUNT:-0}
+    export "GIT_CONFIG_KEY_${count}=credential.helper"
+    export "GIT_CONFIG_VALUE_${count}=!bash \"$PWD/scripts/ci-git-credential\""
+    export GIT_CONFIG_COUNT=$((count + 1))
+fi
+
+git lfs install --local
+# Fetch LFS objects explicitly in each repository after all checkouts exist.
+GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --recursive
+git submodule foreach --recursive 'git lfs install --local'
+/usr/bin/python3 scripts/fetch-lfs.py

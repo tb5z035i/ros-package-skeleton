@@ -25,20 +25,4 @@ retry_download() {
 export ROSDISTRO_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml
 "${as_root[@]}" apt-get -o Acquire::Retries=3 update
 retry_download rosdep update --rosdistro "$ROS_DISTRO"
-rosdep install --from-paths src --ignore-src --rosdistro "$ROS_DISTRO" -y
-
-# Apply packaging overrides here too, so local and CI builds agree.
-extra=$(/usr/bin/python3 - <<'PY'
-import sys
-from pathlib import Path
-sys.path.insert(0, 'scripts')
-from deb_packaging import load_config
-config = load_config(Path('packaging.toml'))
-dependencies = config.get('dependencies', {})
-print('\n'.join(sorted(set(dependencies.get('build', []) + dependencies.get('runtime', [])))))
-PY
-)
-if [[ -n $extra ]]; then
-    mapfile -t packages <<< "$extra"
-    "${as_root[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
-fi
+/usr/bin/python3 scripts/install_workspace_deps.py

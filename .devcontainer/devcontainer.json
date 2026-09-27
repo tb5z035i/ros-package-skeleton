@@ -31,10 +31,10 @@
     "source=${localWorkspaceFolder}/.devcontainer/.local,target=/run/ros-workspace-host,type=bind,readonly",
     "source=/dev,target=/dev,type=bind",
     "source=/run/udev,target=/run/udev,type=bind,readonly",
-    "source=${localEnv:HOME}/.codex,target=/home/ros/.codex,type=bind"
+    "source=${localEnv:HOME}/.codex,target=${localEnv:HOME}/.codex,type=bind"
   ],
   "initializeCommand": ["bash", "${localWorkspaceFolder}/.devcontainer/initialize-host.sh"],
-  "postCreateCommand": "bash scripts/install-deps",
+  "postCreateCommand": "bash scripts/prepare-sources && bash scripts/install-deps",
   "postStartCommand": ["bash", "/workspaces/ros_ws/.devcontainer/link-codex.sh"],
   "postAttachCommand": ["bash", "/workspaces/ros_ws/.devcontainer/link-codex.sh"],
   "waitFor": "postStartCommand",

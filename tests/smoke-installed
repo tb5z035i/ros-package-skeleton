@@ -2,8 +2,7 @@
 # Install/remove only in a disposable container, never on the development host.
 set -euo pipefail
 if [[ ${ROS_DEB_TEST_DISPOSABLE:-} != 1 || $EUID != 0 || $# != 1 ]]; then
-    echo 'Usage (disposable container, as root):' >&2
-    echo '  ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed dist/package.deb' >&2
+    echo 'Usage: ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed dist/package.deb (root, disposable container)' >&2
     exit 2
 fi
 deb=$(realpath "$1")
@@ -18,32 +17,60 @@ if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok ins
     echo "Refusing to replace an already installed package: $package" >&2
     exit 2
 fi
+reports=${ROS_DEB_TEST_REPORTS:-}
+if [[ -n $reports ]]; then
+    reports=$(realpath -m "$reports")
+    mkdir -p "$reports"
+fi
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-cp "$script_dir/smoke_nodes.py" "$scratch/smoke_nodes.py"
+cp "$script_dir/../scripts/run_installed_tests.py" "$scratch/"
 find "$ROS_PREFIX" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > "$scratch/setup.sha256"
 bash "$script_dir/../scripts/configure-mirrors"
 apt-get -o Acquire::Retries=3 update
-apt-get -o Acquire::Retries=3 install -y --no-install-recommends "$deb"
-
-# Only the system underlay is sourced; neither source code nor build output is used.
+apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pytest "$deb"
+resources="$ROS_PREFIX/share/$package"
+cp "$resources/workspace-packages" "$scratch/packages"
+# Only the system underlay is sourced; tests come from the installed deb.
 cd "$scratch"
 env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 ROS_SMOKE_EXPECT_PREFIX="$ROS_PREFIX" ROS_PREFIX="$ROS_PREFIX" \
-    bash --noprofile --norc -ec 'source "$ROS_PREFIX/setup.bash"; python3 smoke_nodes.py'
+    bash --noprofile --norc -ec '
+        source "$ROS_PREFIX/setup.bash"
+        while read -r package version; do
+            test "$(ros2 pkg prefix "$package")" = "$ROS_PREFIX"
+        done < packages
+        if [[ -n $2 ]]; then
+            /usr/bin/python3 run_installed_tests.py --installed "$1/tests" --reports "$2"
+        else
+            /usr/bin/python3 run_installed_tests.py --installed "$1/tests"
+        fi
+    ' smoke "$resources" "$reports"
 sha256sum --check "$scratch/setup.sha256"
+# Reconfiguration must be repeatable; preserve operator edits to conffiles.
+mapfile -t conffiles < <(dpkg-query -W -f='${Conffiles}' "$package" | awk '{print $1}')
+for path in "${conffiles[@]}"; do
+    [[ -n $path ]] || continue
+    printf '\n# install verification: preserved operator edit\n' >> "$path"
+    sha256sum "$path" >> "$scratch/conffiles.sha256"
+done
+apt-get install --reinstall -y -o Dpkg::Options::=--force-confold "$deb"
+if [[ -f "$scratch/conffiles.sha256" ]]; then sha256sum --check "$scratch/conffiles.sha256"; fi
 apt-get remove -y "$package"
 sha256sum --check "$scratch/setup.sha256"
 env -i HOME="$scratch" PATH=/usr/bin:/bin LANG=C.UTF-8 ROS_PREFIX="$ROS_PREFIX" \
     bash --noprofile --norc <<'CHECK'
 set -e
 source "$ROS_PREFIX/setup.bash"
-for package in hello_py hello_cpp; do
+while read -r package version; do
     if ros2 pkg prefix "$package"; then
         echo "Package still discoverable after removal: $package" >&2
         exit 1
     fi
-done
+done < packages
 ros2 pkg prefix std_msgs
 CHECK
-echo 'Debian install, publication, removal, and ROS underlay checks passed.'
+# Packages without conffiles can already be absent from the APT cache.
+dpkg --purge "$package"
+for path in "${conffiles[@]}"; do [[ -z $path || ! -e $path ]]; done
+echo 'Debian install, reconfigure, configuration preservation, removal, purge and underlay checks passed.'

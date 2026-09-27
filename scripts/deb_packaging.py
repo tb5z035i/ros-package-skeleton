@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # Ubuntu 22.04 ships Python 3.10.
     import tomli as tomllib
 
 from ros_platform import detect_target
+from python_dependencies import collect_python_dependencies, read_requirements
 
 
 PACKAGE_NAME = re.compile(r'[a-z0-9][a-z0-9+.-]+\Z')
@@ -74,8 +75,8 @@ def load_config(path, maintainer=None):
     if not re.fullmatch(r'[^<>]+ <[^<>\s@]+@[^<>\s@]+>', package['maintainer']):
         raise PackagingError('Maintainer must be "Name <email@example.com>"')
     licenses = package.get('license_files', [])
-    if not isinstance(licenses, list) or not licenses or not all(isinstance(p, str) for p in licenses):
-        raise PackagingError('package.license_files must list the bundled source licenses')
+    if not isinstance(licenses, list) or not all(isinstance(p, str) for p in licenses):
+        raise PackagingError('package.license_files must list source license paths')
     for kind in ('build', 'runtime'):
         dependencies = config.get('dependencies', {}).get(kind, [])
         if not isinstance(dependencies, list) or not all(
@@ -121,15 +122,18 @@ class Resolver:
                           '--os=ubuntu:' + self.target.codename, key],
                          env=self.env, capture=True)
             lines = [line.strip() for line in output.splitlines() if line.strip()]
-            if not lines or lines[0] != '#apt':
-                raise PackagingError(f'{key}: requires a non-APT installer; add an APT rosdep rule')
-            names = ' '.join(lines[1:]).split()
-            if not names or not all(PACKAGE_NAME.fullmatch(name) for name in names):
-                raise PackagingError(f'{key}: no valid Debian dependency resolution: {output}')
-            self.cache[key] = names
+            if not lines or lines[0] not in ('#apt', '#pip'):
+                raise PackagingError(f'{key}: only APT and pip rosdep installers are supported')
+            installer = lines[0][1:]
+            names = shlex.split(' '.join(lines[1:]))
+            if installer == 'pip':
+                names = read_requirements('\n'.join(names), key)
+            if not names or (installer == 'apt' and not all(PACKAGE_NAME.fullmatch(name) for name in names)):
+                raise PackagingError(f'{key}: invalid dependency resolution: {output}')
+            self.cache[key] = (installer, names)
         return self.cache[key]
 
-    def dependencies(self, packages, kinds):
+    def dependencies(self, packages, kinds, installer='apt'):
         bundled = {package.name for package in packages}
         result = set()
         operators = {'lt': '<<', 'lte': '<=', 'eq': '=', 'gte': '>=', 'gt': '>>'}
@@ -138,14 +142,24 @@ class Resolver:
                 for dependency in getattr(package, kind + '_depends'):
                     if dependency.evaluated_condition is False or dependency.name in bundled:
                         continue
-                    for name in self.resolve(dependency.name):
+                    resolved_installer, names = self.resolve(dependency.name)
+                    if resolved_installer != installer:
+                        continue
+                    for name in names:
                         constraints = []
                         for attr, operator in operators.items():
                             version = getattr(dependency, 'version_' + attr)
                             if version:
                                 if not re.fullmatch(r'[0-9][A-Za-z0-9.+:~\-]*', version):
                                     raise PackagingError(f'Invalid dependency version: {version}')
-                                constraints.append(f'{name} ({operator} {version})')
+                                if installer == 'pip':
+                                    from packaging.requirements import Requirement
+                                    requirement = Requirement(name)
+                                    requirement.specifier &= {'lt': '<', 'lte': '<=', 'eq': '==',
+                                                             'gte': '>=', 'gt': '>'}[attr] + version
+                                    name = str(requirement)
+                                else:
+                                    constraints.append(f'{name} ({operator} {version})')
                         result.update(constraints or [name])
         return result
 
@@ -334,14 +348,32 @@ def write_metadata(stage, config, packages, dependencies, version, target, root)
     doc = stage / 'usr/share/doc' / name
     doc.mkdir(parents=True)
     notices = []
-    for filename in package['license_files']:
+    licenses = set(package.get('license_files', []))
+    for ros_package in packages:
+        if not getattr(ros_package, 'filename', None):
+            continue
+        source = Path(ros_package.filename).parent
+        found = sorted(set(source.glob('LICENSE*')) | set(source.glob('COPYING*')))
+        found += [source / license.file for license in ros_package.licenses
+                  if getattr(license, 'file', None)]
+        if not found and not package.get('license_files'):
+            raise PackagingError(f'{ros_package.name}: add a LICENSE file or package.license_files')
+        licenses.update(str(path.relative_to(root)) for path in found if path.is_file())
+    for filename in sorted(licenses):
         path = (root / filename).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             raise PackagingError(f'License file must exist inside the workspace: {filename}')
         notices.append(f'License notice from {filename}:\n\n{path.read_text()}')
     (doc / 'copyright').write_text('\n\n'.join(notices))
-    (doc / 'workspace-packages').write_text(''.join(
-        f'{p.name} {p.version}\n' for p in packages))
+    package_manifest = ''.join(f'{p.name} {p.version}\n' for p in packages)
+    (doc / 'workspace-packages').write_text(package_manifest)
+    # Minimal container images may configure dpkg to exclude /usr/share/doc.
+    resources = stage / target.prefix.relative_to('/') / 'share' / name
+    resources.mkdir(parents=True, exist_ok=True)
+    manifest = resources / 'workspace-packages'
+    if manifest.exists():
+        raise PackagingError(f'Reserved bundle manifest already installed: {manifest}')
+    manifest.write_text(package_manifest)
     conflicts = sorted({target.package_name(p.name.replace('_', '-')) for p in packages} - {name})
     size = sum(path.lstat().st_size for path in stage.rglob('*') if not path.is_dir())
     fields = [f'Package: {name}', f'Version: {version}', f'Architecture: {target.architecture}',
@@ -390,6 +422,8 @@ def build(args):
         resolver = Resolver(env, target)
         extra = config.get('dependencies', {})
         runtime = resolver.dependencies(packages, RUNTIME_TYPES)
+        python_dependencies = collect_python_dependencies(
+            packages, resolver.dependencies(packages, RUNTIME_TYPES, 'pip'))
         runtime.update(extra.get('runtime', []))
         runtime.add(target.package_name('ros-core'))
         build_dependencies = resolver.dependencies(packages, BUILD_TYPES) | runtime
@@ -400,7 +434,7 @@ def build(args):
              '--build-base', work / 'build', '--install-base', install, '--merge-install',
              '--executor', 'sequential', '--event-handlers', 'console_direct+',
              '--cmake-args', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_TESTING=OFF',
-             '-DAMENT_CMAKE_SYMLINK_INSTALL=OFF'], env=env, cwd=work)
+             '-DAMENT_CMAKE_SYMLINK_INSTALL=OFF', '-DPython3_EXECUTABLE=/usr/bin/python3'], env=env, cwd=work)
         # dpkg-shlibdeps requires a source control file even for a binary-only bundle.
         (work / 'debian').mkdir()
         (work / 'debian/control').write_text(
@@ -409,6 +443,8 @@ def build(args):
         stage = work / 'payload'
         destination = stage / target.prefix.relative_to('/')
         stage_install(install, destination, [work, root], target.prefix)
+        from package_extras import stage_extras
+        runtime.update(stage_extras(stage, root, config, packages, target, python_dependencies))
         verify_payload(destination, packages, target.prefix)
         runtime.update(elf_dependencies(stage, package_name, work, env, target.prefix))
         write_metadata(stage, config, packages, runtime, args.version, target, root)

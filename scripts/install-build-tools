@@ -9,6 +9,6 @@ export DEBIAN_FRONTEND=noninteractive
 bash "$(dirname "${BASH_SOURCE[0]}")/configure-mirrors"
 apt-get -o Acquire::Retries=3 update
 apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    build-essential cmake curl dpkg-dev git openssh-client sudo \
+    build-essential cmake curl dpkg-dev git git-lfs openssh-client sudo \
     python3-colcon-common-extensions python3-catkin-pkg \
-    python3-rosdep python3-vcstool python3-pytest python3-tomli
+    python3-rosdep python3-vcstool python3-pytest python3-tomli python3-pip python3-packaging

@@ -128,7 +128,7 @@ class DependencyTests(unittest.TestCase):
 
     def test_internal_and_disabled_dependencies_are_excluded(self):
         resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
-        resolver.cache = {'external': ['libexternal1']}
+        resolver.cache = {'external': ('apt', ['libexternal1'])}
         package = SimpleNamespace(name='example', exec_depends=[
             self.dependency('internal'), self.dependency('disabled', False),
             self.dependency('external', gte='1.2')])
@@ -138,8 +138,8 @@ class DependencyTests(unittest.TestCase):
 
     def test_unresolved_key_fails(self):
         resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
-        with patch.object(packaging, 'run', return_value='#pip\nunavailable\n'):
-            with self.assertRaisesRegex(packaging.PackagingError, 'non-APT'):
+        with patch.object(packaging, 'run', return_value='#gem\nunavailable\n'):
+            with self.assertRaisesRegex(packaging.PackagingError, 'only APT and pip'):
                 resolver.resolve('unavailable')
 
     def test_rosdep_resolves_for_selected_ubuntu_and_ros_distro(self):
@@ -147,7 +147,7 @@ class DependencyTests(unittest.TestCase):
             with self.subTest(distro=distro):
                 resolver = packaging.Resolver({}, Target(distro, codename, 'arm64'))
                 with patch.object(packaging, 'run', return_value=f'#apt\nros-{distro}-rclpy\n') as run:
-                    self.assertEqual(resolver.resolve('rclpy'), [f'ros-{distro}-rclpy'])
+                    self.assertEqual(resolver.resolve('rclpy'), ('apt', [f'ros-{distro}-rclpy']))
                     run.assert_called_once_with(
                         ['rosdep', 'resolve', '--rosdistro', distro, '--os=ubuntu:' + codename, 'rclpy'],
                         env={}, capture=True)

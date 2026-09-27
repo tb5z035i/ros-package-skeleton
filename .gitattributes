@@ -1,0 +1,4 @@
+# Materialize these assets with scripts/prepare-sources before building.
+*.whl filter=lfs diff=lfs merge=lfs -text
+*.stl filter=lfs diff=lfs merge=lfs -text
+*.STL filter=lfs diff=lfs merge=lfs -text

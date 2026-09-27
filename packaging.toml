@@ -3,7 +3,9 @@
 name = "example-workspace"
 maintainer = "Your Team <team@example.com>"
 description = "ROS 2 workspace with rclpy and rclcpp examples"
-license_files = ["src/hello_py/LICENSE", "src/hello_cpp/LICENSE"]
+# Package-local LICENSE* / COPYING* files are discovered automatically.
+# List additional workspace/vendor notices here.
+license_files = []
 
 [dependencies]
 # Optional Debian package names for dependencies missing from package.xml.

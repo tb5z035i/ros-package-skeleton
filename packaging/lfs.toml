@@ -1,0 +1,5 @@
+# Omit a repository to honor its own LFS fetch settings (all files by default).
+# Paths are relative to the workspace; "." selects the root repository.
+# [repositories."third_party/robot_descriptions"]
+# include = ["products/my_robot/**"]
+# exclude = []

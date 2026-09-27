@@ -1,0 +1,2 @@
+# Optional absolute installed paths/globs, one per line. Unmatched entries fail.
+# @PREFIX@/share/my_bringup/config/*.yaml

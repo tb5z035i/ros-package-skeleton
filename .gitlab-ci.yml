@@ -21,6 +21,9 @@ variables:
   BUILD_JOBS: "2"
   DEBIAN_FRONTEND: "noninteractive"
   GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_FORCE_HTTPS: "true"
+  GIT_LFS_SKIP_SMUDGE: "1"
+  GIT_DEPTH: "0"
 
 default:
   image: "${ROS_IMAGE_REPOSITORY}:${ROS_DISTRO}-ros-core"
@@ -45,6 +48,7 @@ build_and_package:
     - when: on_success
   before_script:
     - bash scripts/install-build-tools
+    - bash scripts/prepare-sources
     - bash scripts/install-deps
   script:
     - bash scripts/ci-build
@@ -72,7 +76,14 @@ verify_deb:
     - job: build_and_package
       artifacts: true
   script:
-    - ROS_DEB_TEST_DISPOSABLE=1 bash tests/smoke-installed "dist/$ROS_DISTRO/$TARGET_ARCH/"*.deb
+    - ROS_DEB_TEST_DISPOSABLE=1 ROS_DEB_TEST_REPORTS="dist/$ROS_DISTRO/$TARGET_ARCH/install-test-results" bash tests/smoke-installed "dist/$ROS_DISTRO/$TARGET_ARCH/"*.deb
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - dist/*/*/install-test-results/
+    reports:
+      junit: dist/**/install-test-results/*.xml
 
 release_packages:
   stage: release
