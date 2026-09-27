@@ -14,12 +14,15 @@
 | `.devcontainer/`、`Dockerfile` | VS Code 开发环境，按 ROS 发行版和目标架构选择基础镜像 |
 | `src/hello_py` | `ament_python` / rclpy 示例 |
 | `src/hello_cpp` | `ament_cmake` / rclcpp 示例 |
-| `packaging.toml`、`scripts/` | 依赖安装和整个工作空间的 `.deb` 打包 |
+| `third_party/` | 可选的第三方 ROS 包，参与工作空间构建和调试，包本身不进入交付 `.deb` |
+| `packaging.toml`、`scripts/` | 工作空间依赖安装和 `src/` 中 ROS 包的 `.deb` 打包 |
 | `.gitlab-ci.yml`、`tests/` | 云端构建、消息验证和安装/卸载检查 |
 
 ## 基于模板开发：需要修改什么
 
 首次复用时设置根目录的 `packaging.toml`，之后将日常开发集中在 `src/`。服务、现场配置保护和 LFS 下载范围使用 `packaging/` 下的可选配置。通用构建、依赖安装、打包和测试脚本会自动发现这些内容。
+
+构建范围和交付范围分别确定：`src/` 与可选的 `third_party/` 都参与依赖安装、CI 构建和发布构建；`.deb` 只收集 `src/` 包的安装文件、许可证、pip 输入和交付测试，版本与包清单也只来自 `src/`。发布构建为每个 ROS 包使用独立的安装目录，再合并需要交付的包，因此第三方的库、头文件、Python 模块等不会因共享安装目录而混入产物。若交付包在运行时依赖第三方 ROS 包，须为其提供 rosdep 对应的独立安装包；该依赖仍写入 `.deb` 的运行依赖，不能仅靠开发工作空间中的源码满足。仅用于构建的包使用 `build_depend` / `buildtool_depend` 声明。
 
 | 修改位置 | 何时修改 | 需要填写或实现的内容 |
 | --- | --- | --- |
@@ -121,7 +124,7 @@ exclude = []
 ```bash
 bash scripts/prepare-sources          # 首次准备或更新子模块/LFS 时执行
 bash scripts/install-deps             # 首次准备或更新依赖时执行
-colcon build --base-paths src --symlink-install
+colcon build --symlink-install        # 包括 src/ 和 third_party/ 中的包
 source install/setup.bash
 colcon test --base-paths src --return-code-on-test-failure
 colcon test-result --verbose
@@ -139,7 +142,7 @@ colcon test-result --verbose
 
 ## 开发与运行
 
-开发容器默认面向 **本地 Linux 桌面（X11，或启用 XWayland 的 Wayland）**。宿主机安装 Docker、VS Code、Dev Containers 扩展和 `xauth`（Ubuntu：`sudo apt install xauth`），从桌面会话打开 VS Code，选择 **Dev Containers: Reopen in Container**。镜像包含 Git LFS；首次创建容器先运行 `bash scripts/prepare-sources`，递归初始化子模块，并分别下载主仓库和各子模块的 LFS 文件，成功后安装 `src/` 的依赖。新终端自动加载 ROS 环境。更新子模块后重新运行 `bash scripts/prepare-sources`；添加依赖后重新执行 `bash scripts/install-deps`。私有仓库需可用的 Git/SSH 读取凭据，可使用 Dev Containers 转发的宿主机 SSH agent。根目录的 `git lfs pull` 不会递归处理子模块。
+开发容器默认面向 **本地 Linux 桌面（X11，或启用 XWayland 的 Wayland）**。宿主机安装 Docker、VS Code、Dev Containers 扩展和 `xauth`（Ubuntu：`sudo apt install xauth`），从桌面会话打开 VS Code，选择 **Dev Containers: Reopen in Container**。镜像包含 Git LFS；首次创建容器先运行 `bash scripts/prepare-sources`，递归初始化子模块，并分别下载主仓库和各子模块的 LFS 文件，成功后安装 `src/` 和 `third_party/` 的依赖。新终端自动加载 ROS 环境。更新子模块后重新运行 `bash scripts/prepare-sources`；添加依赖后重新执行 `bash scripts/install-deps`。私有仓库需可用的 Git/SSH 读取凭据，可使用 Dev Containers 转发的宿主机 SSH agent。根目录的 `git lfs pull` 不会递归处理子模块。
 
 默认使用 Jazzy；使用 Humble 时，在启动 VS Code 的宿主机环境中设置 `ROS_WORKSPACE_DISTRO=humble`，再重建开发容器。容器架构默认跟随宿主机。切换 ROS 发行版或架构时，先清理旧的 `build/`、`install/`、`log/`，避免复用不兼容的构建产物。
 

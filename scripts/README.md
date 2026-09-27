@@ -22,7 +22,9 @@ bash scripts/install-deps
 
 `packaging.toml` 的 `package.name` 是不含 ROS 前缀的工作空间名，例如 `example-workspace`，Debian 包名自动生成为 `ros-jazzy-example-workspace` 或 `ros-humble-example-workspace`。各 ROS 包的 LICENSE/COPYING 和 manifest license file 自动收集；`package.license_files` 可补充其他分发许可证。`dependencies.build/runtime` 接受在两个目标环境均可用的 Debian 包名；ROS 依赖及发行版条件应写入 `package.xml`，由对应发行版的 rosdep 解析。`install-deps` 会安装清单依赖（含测试依赖）及两类补充依赖；发布打包器本身不会安装依赖。
 
-打包过程独立加载 `/opt/ros/<发行版>`，在临时目录进行非符号链接的 Release 构建，合并到同一 ROS 路径。运行依赖通过对应 Ubuntu/ROS 的 rosdep 与 ELF 分析生成；许可证和 ROS 包版本清单写入 `/usr/share/doc/<Debian包名>/`。根级 ROS 环境文件不会进入产物，包内的环境钩子会保留。
+`install-deps` 和 `ci-build` 的构建范围包括 `src/` 与可选的 `third_party/`。CI 的包测试和交付测试仍针对 `src/`。本地可通过 `colcon build --symlink-install` 构建整个工作空间用于调试。
+
+打包过程独立加载 `/opt/ros/<发行版>`，在临时目录对 `src/` 和 `third_party/` 进行非符号链接的 Release 构建，每个包有独立的安装目录；只将 `src/` 包的安装文件合并到交付 ROS 路径。第三方包的库、头文件、Python 模块、许可证、pip 输入和测试不自动进入 `.deb`。版本、包清单和 `Conflicts` 也只包含 `src/` 包。运行依赖通过对应 Ubuntu/ROS 的 rosdep 与 ELF 分析生成；运行时需要的第三方包须能通过 rosdep 解析为独立安装的依赖，构建时有其源码不会消除这项运行依赖。仅用于构建的包应声明为 `build_depend` / `buildtool_depend`。许可证和 ROS 包版本清单写入 `/usr/share/doc/<Debian包名>/`。根级 ROS 环境文件不会进入产物，包内的环境钩子会保留。
 
 直接运行 `build-deb` 默认输出到 `dist/`；`ci-build` 输出到 `dist/<发行版>/<架构>/`，避免合并矩阵产物时覆盖。发布脚本递归收集所有 `.deb`，上传到以工作空间名分组的 Registry，在一个 Release 中列出全部目标的下载链接。
 

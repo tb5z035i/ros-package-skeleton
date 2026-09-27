@@ -85,11 +85,24 @@ def load_config(path, maintainer=None):
     return config
 
 
-def discover(root, work, env):
+def source_paths(root):
+    return [root / name for name in ('src', 'third_party') if (root / name).is_dir()]
+
+
+def shipped_packages(root, packages):
+    packages = [package for package in packages
+                if Path(package.filename).is_relative_to(root / 'src')]
+    if not packages:
+        raise PackagingError('No packages discovered under src/')
+    return packages
+
+
+def discover(root, work, env, *, include_third_party=False):
     from catkin_pkg.package import parse_package
 
     paths = run(['colcon', '--log-base', work / 'log', 'list', '--base-paths',
-                 root / 'src', '--topological-order', '--paths-only'],
+                 *(source_paths(root) if include_third_party else [root / 'src']),
+                 '--topological-order', '--paths-only'],
                 env=env, cwd=work, capture=True).splitlines()
     if not paths:
         raise PackagingError('No packages discovered under src/')
@@ -106,7 +119,7 @@ def discover(root, work, env):
         if any(dep.evaluated_condition is not False for dep in package.group_depends):
             raise PackagingError(f'{package.name}: group_depend is unsupported; declare explicit dependencies')
         packages.append(package)
-    print('Bundling: ' + ', '.join(package.name for package in packages), flush=True)
+    print('Discovered: ' + ', '.join(package.name for package in packages), flush=True)
     return packages
 
 
@@ -182,27 +195,41 @@ def known_metadata(relative):
             relative.parts[:3] == ('share', 'ament_index', 'resource_index'))
 
 
-def stage_install(install, destination, forbidden, prefix):
+def stage_install(install, destination, forbidden, prefix, *, packages=None):
     destination.mkdir(parents=True)
-    for child in install.iterdir():
-        if ROOT_GENERATED.fullmatch(child.name):
-            continue
-        target = destination / child.name
-        if child.is_dir() and not child.is_symlink():
-            shutil.copytree(child, target, symlinks=True)
-        elif child.is_symlink():
-            target.symlink_to(os.readlink(child))
-        else:
-            shutil.copy2(child, target)
+    # Colcon's isolated prefixes preserve file ownership even when packages
+    # install outside share/<name> (libraries, headers, Python modules, etc.).
+    installs = [install / package.name for package in packages] if packages is not None else [install]
+    relocations = sorted(
+        (path for path in install.iterdir() if path.is_dir()) if packages is not None else [install],
+        key=lambda path: len(str(path)), reverse=True)
+    for source in installs:
+        for child in source.rglob('*'):
+            relative = child.relative_to(source)
+            if len(relative.parts) == 1 and ROOT_GENERATED.fullmatch(child.name):
+                continue
+            target = destination / relative
+            if child.is_dir() and not child.is_symlink():
+                if target.is_symlink() or (target.exists() and not target.is_dir()):
+                    raise PackagingError(f'Packages install conflicting files: {relative}')
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copystat(child, target)
+            else:
+                if target.exists() or target.is_symlink():
+                    raise PackagingError(f'Packages install conflicting files: {relative}')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if child.is_symlink():
+                    target.symlink_to(os.readlink(child))
+                else:
+                    shutil.copy2(child, target)
 
-    original = str(install).encode()
     needles = [str(path).encode() for path in forbidden]
     # Normalize the whole link graph before resolving any member of a chain.
     for path in sorted(destination.rglob('*')):
         if not path.is_symlink():
             continue
         link = os.readlink(path)
-        for link_prefix in (install, prefix):
+        for link_prefix in (*relocations, prefix):
             try:
                 inside = Path(link).relative_to(link_prefix)
             except ValueError:
@@ -233,7 +260,8 @@ def stage_install(install, destination, forbidden, prefix):
             continue
         data = path.read_bytes()
         if b'\0' not in data and known_metadata(relative):
-            data = data.replace(original, str(prefix).encode())
+            for original in relocations:
+                data = data.replace(str(original).encode(), str(prefix).encode())
             path.write_bytes(data)
         if b'\0' not in data and any(needle in data for needle in needles):
             raise PackagingError(f'Unrelocated source/build reference in {relative}; fix its install rules')
@@ -253,6 +281,10 @@ def verify_payload(destination, packages, prefix):
     for path in destination.iterdir():
         if ROOT_GENERATED.fullmatch(path.name):
             raise PackagingError(f'Workspace setup file included in payload: {path.name}')
+    index = destination / 'share/ament_index/resource_index/packages'
+    unexpected = {path.name for path in index.glob('*')} - {package.name for package in packages}
+    if unexpected:
+        raise PackagingError('Non-src ROS packages in payload: ' + ', '.join(sorted(unexpected)))
     for package in packages:
         for relative in (f'share/ament_index/resource_index/packages/{package.name}',
                          f'share/{package.name}/package.xml',
@@ -268,12 +300,14 @@ def verify_payload(destination, packages, prefix):
             raise PackagingError(f'Payload collides with an installed file: {installed}')
 
 
-def elf_dependencies(stage, package_name, work, env, prefix):
+def elf_dependencies(stage, package_name, work, env, prefix, *, external_packages=(),
+                     install=None, resolver=None):
     destination = stage / prefix.relative_to('/')
     binaries = []
     shlibs = set()
     bundled_sonames = set()
     unversioned_needed = {}
+    needed_sonames = set()
     library_dirs = {str(prefix / 'lib')}
     for path in sorted(destination.rglob('*')):
         if not path.is_file() or path.is_symlink():
@@ -285,6 +319,7 @@ def elf_dependencies(stage, package_name, work, env, prefix):
         if '(NEEDED)' not in dynamic and '(SONAME)' not in dynamic:
             continue
         binaries.append(path)
+        needed_sonames.update(re.findall(r'\(NEEDED\).*\[([^\]]+)\]', dynamic))
         unversioned_needed[path] = set(re.findall(r'\(NEEDED\).*\[([^\]]+\.so)\]', dynamic))
         library_dirs.add(str(path.parent))
         match = re.search(r'\(SONAME\).*\[([^\]]+)\]', dynamic)
@@ -300,6 +335,30 @@ def elf_dependencies(stage, package_name, work, env, prefix):
             shlibs.add(f'{name} {version} {package_name}')
     if not binaries:
         return set()
+    # Third-party libraries are available to the linker but are not in the
+    # payload or necessarily installed through APT on the build machine.
+    # Map the ones actually linked by shipped binaries to their ROS package's
+    # rosdep dependency, including unversioned ROS SONAMEs.
+    dependencies = set()
+    external_sonames = {}
+    for package in external_packages:
+        for library in (install / package.name).rglob('*.so*'):
+            if not library.is_file():
+                continue
+            library_dirs.add(str(library.parent))
+            soname = library.name
+            if soname not in needed_sonames or soname in bundled_sonames:
+                continue
+            if soname in external_sonames and external_sonames[soname] != package.name:
+                raise PackagingError(f'Ambiguous third-party library: {soname}')
+            external_sonames[soname] = package.name
+            installer, names = resolver.resolve(package.name)
+            if installer != 'apt':
+                raise PackagingError(f'{package.name}: shared libraries need an APT runtime dependency')
+            dependencies.update(names)
+            if '.so.' in soname:
+                name, version = soname.split('.so.', 1)
+                shlibs.add(f'{name} {version} ' + ', '.join(names))
     # These local mappings identify bundled libraries, allowing -x to remove self-dependencies.
     local_shlibs = work / 'shlibs.local'
     local_shlibs.write_text('\n'.join(sorted(shlibs)) + '\n')
@@ -309,7 +368,6 @@ def elf_dependencies(stage, package_name, work, env, prefix):
                   *['-l' + directory for directory in sorted(library_dirs)],
                   *['-e' + str(binary) for binary in binaries]],
                  env=env, cwd=work, capture=True)
-    dependencies = set()
     for line in output.splitlines():
         if line.startswith('shlibs:Depends='):
             dependencies.update(entry.strip() for entry in line.split('=', 1)[1].split(',') if entry.strip())
@@ -317,7 +375,7 @@ def elf_dependencies(stage, package_name, work, env, prefix):
     # metadata. dpkg-shlibdeps deliberately skips those. Resolve their APT
     # owners as well, so missing upstream manifest entries cannot silently
     # produce a bundle that only runs in its build environment.
-    resolved_sonames = set(bundled_sonames)
+    resolved_sonames = set(bundled_sonames) | external_sonames.keys()
     loader_env = dict(env)
     loader_env['LD_LIBRARY_PATH'] = ':'.join(sorted(library_dirs)) + ':' + env.get('LD_LIBRARY_PATH', '')
     for binary, needed in unversioned_needed.items():
@@ -418,7 +476,9 @@ def build(args):
         env = clean_environment(work, target)
         env['CMAKE_BUILD_PARALLEL_LEVEL'] = str(args.jobs)
         env['MAKEFLAGS'] = f'-j{args.jobs} -l{args.jobs}'
-        packages = discover(root, work, env)
+        workspace_packages = discover(root, work, env, include_third_party=True)
+        packages = shipped_packages(root, workspace_packages)
+        print('Bundling: ' + ', '.join(package.name for package in packages), flush=True)
         resolver = Resolver(env, target)
         extra = config.get('dependencies', {})
         runtime = resolver.dependencies(packages, RUNTIME_TYPES)
@@ -426,12 +486,15 @@ def build(args):
             packages, resolver.dependencies(packages, RUNTIME_TYPES, 'pip'))
         runtime.update(extra.get('runtime', []))
         runtime.add(target.package_name('ros-core'))
-        build_dependencies = resolver.dependencies(packages, BUILD_TYPES) | runtime
+        # Local third-party packages satisfy build dependencies, but remain
+        # external dependencies when required by a shipped package at runtime.
+        build_dependencies = resolver.dependencies(workspace_packages, BUILD_TYPES)
         build_dependencies.update(extra.get('build', []))
+        build_dependencies.update(extra.get('runtime', []))
         check_dependencies(build_dependencies, work, env)
         install = work / 'install'
-        run(['colcon', '--log-base', work / 'log', 'build', '--base-paths', root / 'src',
-             '--build-base', work / 'build', '--install-base', install, '--merge-install',
+        run(['colcon', '--log-base', work / 'log', 'build', '--base-paths', *source_paths(root),
+             '--build-base', work / 'build', '--install-base', install,
              '--executor', 'sequential', '--event-handlers', 'console_direct+',
              '--cmake-args', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_TESTING=OFF',
              '-DAMENT_CMAKE_SYMLINK_INSTALL=OFF', '-DPython3_EXECUTABLE=/usr/bin/python3'], env=env, cwd=work)
@@ -442,11 +505,14 @@ def build(args):
             f'Package: {package_name}\nArchitecture: any\nDescription: workspace\n')
         stage = work / 'payload'
         destination = stage / target.prefix.relative_to('/')
-        stage_install(install, destination, [work, root], target.prefix)
+        stage_install(install, destination, [work, root], target.prefix, packages=packages)
         from package_extras import stage_extras
         runtime.update(stage_extras(stage, root, config, packages, target, python_dependencies))
         verify_payload(destination, packages, target.prefix)
-        runtime.update(elf_dependencies(stage, package_name, work, env, target.prefix))
+        runtime.update(elf_dependencies(
+            stage, package_name, work, env, target.prefix,
+            external_packages=[package for package in workspace_packages if package not in packages],
+            install=install, resolver=resolver))
         write_metadata(stage, config, packages, runtime, args.version, target, root)
         name = f'{package_name}_{args.version.split(":")[-1]}_{target.architecture}.deb'
         temporary_deb = work / name

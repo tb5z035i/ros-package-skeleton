@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from deb_packaging import BUILD_TYPES, Resolver, discover, load_config
+from deb_packaging import BUILD_TYPES, Resolver, discover, load_config, source_paths
 from python_dependencies import collect_python_dependencies
 from ros_platform import detect_target
 
@@ -19,12 +19,12 @@ def main():
     as_root = [] if os.geteuid() == 0 else ['sudo']
     with tempfile.TemporaryDirectory(prefix='ros-dependencies-') as temporary:
         work = Path(temporary)
-        packages = discover(root, work, env)
+        packages = discover(root, work, env, include_third_party=True)
         resolver = Resolver(env, target)
         pip = resolver.dependencies(packages, (*BUILD_TYPES, 'test'), 'pip')
         dependencies = collect_python_dependencies(packages, pip)
         skip = [key for key, (installer, _) in resolver.cache.items() if installer == 'pip']
-        command = ['rosdep', 'install', '--from-paths', str(root / 'src'), '--ignore-src',
+        command = ['rosdep', 'install', '--from-paths', *map(str, source_paths(root)), '--ignore-src',
                    '--rosdistro', target.distro, '-y']
         if skip:
             command += ['--skip-keys', ' '.join(skip)]

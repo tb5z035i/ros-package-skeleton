@@ -119,6 +119,85 @@ class HumbleStagingTests(StagingTests):
     distro = 'humble'
 
 
+class PackageBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.install = self.root / 'install'
+        self.destination = self.root / 'payload'
+        self.prefix = Path('/opt/ros/jazzy')
+        self.packages = [SimpleNamespace(name=name, filename=str(self.root / directory / name / 'package.xml'))
+                         for directory, name in [('src', 'app'), ('src', 'app_support'),
+                                                 ('third_party', 'vendor')]]
+        for package in self.packages:
+            source = Path(package.filename).parent
+            source.mkdir(parents=True)
+            self.write(package.name, f'share/ament_index/resource_index/packages/{package.name}', '')
+            self.write(package.name, f'share/{package.name}/package.xml', '<package/>')
+            self.write(package.name, f'share/{package.name}/package.dsv', '')
+
+    def write(self, package, relative, text):
+        path = self.install / package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def stage(self):
+        packages = packaging.shipped_packages(self.root, self.packages)
+        packaging.stage_install(self.install, self.destination, [self.root], self.prefix, packages=packages)
+        packaging.verify_payload(self.destination, packages, self.root / 'underlay')
+
+    def test_only_src_payload_is_merged_and_all_build_prefixes_are_relocated(self):
+        self.write('app', 'lib/python3.12/site-packages/app.py', 'VALUE = 1\n')
+        self.write('app_support', 'include/app_support/api.h', 'void app();\n')
+        self.write('vendor', 'lib/python3.12/site-packages/vendor.py', 'VALUE = 2\n')
+        self.write('vendor', 'include/vendor/api.h', 'void vendor();\n')
+        self.write('vendor', 'bin/vendor-tool', 'vendor\n')
+        self.write('app', 'setup.bash', 'workspace setup')
+        prefixes = ';'.join(str(self.install / package.name) for package in self.packages)
+        self.write('app', 'share/app/cmake/paths.cmake', prefixes)
+        self.stage()
+        self.assertTrue((self.destination / 'lib/python3.12/site-packages/app.py').is_file())
+        self.assertTrue((self.destination / 'include/app_support/api.h').is_file())
+        self.assertFalse((self.destination / 'setup.bash').exists())
+        self.assertFalse(any('vendor' in path.name for path in self.destination.rglob('*')))
+        self.assertEqual((self.destination / 'share/app/cmake/paths.cmake').read_text(),
+                         ';'.join([str(self.prefix)] * 3))
+
+    def test_conflicting_src_files_are_rejected(self):
+        self.write('app', 'include/shared.h', 'one')
+        self.write('app_support', 'include/shared.h', 'two')
+        with self.assertRaisesRegex(packaging.PackagingError, 'conflicting files'):
+            self.stage()
+
+    def test_third_party_files_do_not_conflict_with_src_files(self):
+        self.write('app', 'include/shared.h', 'application')
+        self.write('vendor', 'include/shared.h', 'vendor')
+        self.stage()
+        self.assertEqual((self.destination / 'include/shared.h').read_text(), 'application')
+
+    def test_absolute_link_between_shipped_packages_is_relocated(self):
+        library = self.write('app_support', 'lib/libsupport.so.1', 'library')
+        link = self.install / 'app/lib/libsupport.so'
+        link.parent.mkdir(parents=True)
+        link.symlink_to(library)
+        self.stage()
+        self.assertEqual((self.destination / 'lib/libsupport.so').read_text(), 'library')
+
+    def test_link_to_unshipped_third_party_file_is_rejected(self):
+        library = self.write('vendor', 'lib/libvendor.so.1', 'library')
+        link = self.install / 'app/lib/libvendor.so'
+        link.parent.mkdir(parents=True)
+        link.symlink_to(library)
+        with self.assertRaisesRegex(packaging.PackagingError, 'Broken installed symlink'):
+            self.stage()
+
+    def test_workspace_without_src_packages_cannot_ship_third_party(self):
+        with self.assertRaisesRegex(packaging.PackagingError, 'No packages discovered under src'):
+            packaging.shipped_packages(self.root, self.packages[2:])
+
+
 class DependencyTests(unittest.TestCase):
     @staticmethod
     def dependency(name, enabled=True, **versions):
@@ -135,6 +214,14 @@ class DependencyTests(unittest.TestCase):
         internal = SimpleNamespace(name='internal', exec_depends=[])
         self.assertEqual(resolver.dependencies([package, internal], ['exec']),
                          {'libexternal1 (>= 1.2)'})
+
+    def test_third_party_satisfies_build_but_remains_an_external_runtime_dependency(self):
+        resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
+        resolver.cache = {'vendor': ('apt', ['ros-jazzy-vendor'])}
+        app = SimpleNamespace(name='app', exec_depends=[self.dependency('vendor', gte='1.2')])
+        vendor = SimpleNamespace(name='vendor', exec_depends=[])
+        self.assertEqual(resolver.dependencies([app, vendor], ['exec']), set())
+        self.assertEqual(resolver.dependencies([app], ['exec']), {'ros-jazzy-vendor (>= 1.2)'})
 
     def test_unresolved_key_fails(self):
         resolver = packaging.Resolver({}, Target('jazzy', 'noble', 'amd64'))
